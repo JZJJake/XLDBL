@@ -5,6 +5,9 @@ echo ========================================================
 echo   Starting Knowledge Graph ^& Vector DB System
 echo ========================================================
 
+:: Set Hugging Face Mirror
+set HF_ENDPOINT=https://hf-mirror.com
+
 :: 1. Check Python
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -44,7 +47,7 @@ echo   Starting Backend and Frontend Services
 echo ========================================================
 
 :: Start Backend in a new window
-start "FastAPI Backend" cmd /k "cd backend && title FastAPI Backend && python main.py"
+start "FastAPI Backend" cmd /k "set HF_ENDPOINT=https://hf-mirror.com && cd backend && title FastAPI Backend && python main.py"
 
 :: Start Frontend in a new window
 start "Vue Frontend" cmd /k "cd frontend && title Vue Frontend && npm run dev"
