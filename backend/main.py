@@ -218,7 +218,7 @@ def export_database():
             "id": data['ids'][i],
             "content": data['documents'][i],
             "source": data['metadatas'][i].get("source", ""),
-            "vector": data['embeddings'][i] if 'embeddings' in data and data['embeddings'] else []
+            "vector": data['embeddings'][i] if data.get('embeddings') is not None else []
         }
         export_data["chunks"].append(chunk_obj)
 
