@@ -31,7 +31,7 @@ const beforeUpload: UploadProps['beforeUpload'] = (file) => {
 <template>
   <div class="upload-panel">
     <el-upload
-      action="http://localhost:8000/api/upload"
+      action="/api/upload"
       :on-success="handleSuccess"
       :on-error="handleError"
       :before-upload="beforeUpload"

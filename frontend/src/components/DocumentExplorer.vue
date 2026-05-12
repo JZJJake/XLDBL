@@ -12,7 +12,7 @@ const contentDialogVisible = ref(false)
 const fetchDocuments = async () => {
   loading.value = true
   try {
-    const res = await axios.get('http://localhost:8000/api/documents')
+    const res = await axios.get('/api/documents')
     treeData.value = res.data || []
   } catch (error) {
     ElMessage.error('无法加载文档列表')
@@ -63,28 +63,35 @@ defineExpose({ fetchDocuments })
 .explorer-panel {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid #e4e7ed;
+  border: 1px solid #1f2937;
   border-radius: 4px;
   padding: 10px;
-  background-color: #f9fafc;
+  background-color: #0b0f19;
 }
 .custom-tree {
   background: transparent;
+  color: #e0e0e0;
+}
+:deep(.el-tree-node__content:hover) {
+  background-color: #1e293b;
+}
+:deep(.el-tree-node:focus > .el-tree-node__content) {
+  background-color: #1e293b;
 }
 .custom-tree-node {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: #606266;
+  color: #cbd5e1;
 }
 .raw-content {
   white-space: pre-wrap;
-  background: #f5f7fa;
+  background: #0b0f19;
   padding: 15px;
   border-radius: 6px;
   font-family: monospace;
   line-height: 1.5;
-  color: #303133;
+  color: #f3f4f6;
 }
 </style>

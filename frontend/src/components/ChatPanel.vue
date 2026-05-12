@@ -28,7 +28,7 @@ const sendMessage = async () => {
   scrollToBottom()
 
   try {
-    const res = await axios.post('http://localhost:8000/api/chat', { message: userMsg })
+    const res = await axios.post('/api/chat', { message: userMsg })
     messages.value.push({ role: 'assistant', content: res.data.reply })
   } catch (error) {
     messages.value.push({ role: 'assistant', content: '错误：无法连接到服务器或大模型接口。' })
@@ -78,16 +78,16 @@ const sendMessage = async () => {
 }
 .chat-panel h3 {
   margin-top: 0;
-  color: #303133;
+  color: #f3f4f6;
   font-size: 16px;
-  border-bottom: 2px solid #409EFC;
+  border-bottom: 2px solid #3b82f6;
   padding-bottom: 10px;
 }
 .chat-body {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
-  background: #f5f7fa;
+  background: #0b0f19;
   border-radius: 8px;
   margin-bottom: 10px;
   display: flex;
@@ -99,20 +99,21 @@ const sendMessage = async () => {
   padding: 10px 14px;
   border-radius: 8px;
   font-size: 14px;
-  line-height: 1.4;
+  line-height: 1.6;
   word-wrap: break-word;
+  white-space: pre-wrap; /* Supports wide space indentations */
 }
 .message.user {
   align-self: flex-end;
-  background-color: #409EFC;
+  background-color: #3b82f6;
   color: white;
   border-bottom-right-radius: 2px;
 }
 .message.assistant {
   align-self: flex-start;
-  background-color: white;
-  color: #303133;
-  border: 1px solid #e4e7ed;
+  background-color: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
   border-bottom-left-radius: 2px;
 }
 .loading .dot {

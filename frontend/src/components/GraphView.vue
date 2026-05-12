@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import ForceGraph3D from '3d-force-graph'
+import * as THREE from 'three'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Plus, InfoFilled } from '@element-plus/icons-vue'
@@ -25,9 +26,35 @@ const connectedNeighbors = ref<any[]>([])
 
 const fetchGraphData = async () => {
   try {
-    const res = await axios.get('http://localhost:8000/api/graph')
-    nodes.value = res.data.nodes || []
-    links.value = res.data.links || []
+    const res = await axios.get('/api/graph')
+
+    // Filter out invalid/empty nodes
+    const validNodes = (res.data.nodes || []).filter((n: any) => n && n.id && n.id.trim() !== '')
+    const validNodeIds = new Set(validNodes.map((n: any) => n.id))
+
+    // Filter out edges connecting to invalid nodes
+    const validLinks = (res.data.links || []).filter((l: any) => {
+       const sourceId = typeof l.source === 'object' ? l.source.id : l.source
+       const targetId = typeof l.target === 'object' ? l.target.id : l.target
+       return validNodeIds.has(sourceId) && validNodeIds.has(targetId)
+    })
+
+    // Compute node weights (number of connected edges)
+    const weights: Record<string, number> = {}
+    validNodes.forEach((n: any) => weights[n.id] = 0)
+    validLinks.forEach((l: any) => {
+       const sourceId = typeof l.source === 'object' ? l.source.id : l.source
+       const targetId = typeof l.target === 'object' ? l.target.id : l.target
+       if (weights[sourceId] !== undefined) weights[sourceId]++
+       if (weights[targetId] !== undefined) weights[targetId]++
+    })
+
+    validNodes.forEach((n: any) => {
+      n.val = weights[n.id] || 0
+    })
+
+    nodes.value = validNodes
+    links.value = validLinks
 
     if (Graph) {
       Graph.graphData({ nodes: nodes.value, links: links.value })
@@ -61,17 +88,82 @@ const updateNeighbors = (node: any) => {
   connectedNeighbors.value = neighbors
 }
 
+// Auto-rotation state
+const idleTimeout = ref<number | null>(null)
+const isIdle = ref(false)
+let rotationAngle = 0
+let animationFrameId: number | null = null
+
+const resetIdleTimer = () => {
+  isIdle.value = false
+  if (idleTimeout.value) clearTimeout(idleTimeout.value)
+
+  idleTimeout.value = window.setTimeout(() => {
+    isIdle.value = true
+  }, 5000)
+}
+
+const animateRotation = () => {
+  if (Graph && isIdle.value) {
+    const cameraPos = Graph.cameraPosition()
+    const distance = Math.hypot(cameraPos.x || 0, cameraPos.z || 0) || 200
+    // Center the camera on the graph center
+    Graph.cameraPosition({
+      x: distance * Math.sin(rotationAngle),
+      y: cameraPos.y || 0,
+      z: distance * Math.cos(rotationAngle)
+    }, { x: 0, y: 0, z: 0 }, 0)
+
+    rotationAngle += Math.PI / 1000 // Slow rotation
+  }
+  animationFrameId = requestAnimationFrame(animateRotation)
+}
+
+// Helpers for 3D Geometries
+const getNodeColor = (type: string) => {
+  const t = (type || '').toLowerCase()
+  if (t.includes('申报条件') || t.includes('requirement') || t.includes('condition')) return '#e74c3c'
+  if (t.includes('概念') || t.includes('concept')) return '#3498db'
+  if (t.includes('组织') || t.includes('organization') || t.includes('company')) return '#9b59b6'
+  if (t.includes('技术') || t.includes('technology')) return '#2ecc71'
+  if (t.includes('人物') || t.includes('person')) return '#f1c40f'
+  return '#95a5a6' // Default grey
+}
+
 const initGraph = () => {
   if (!graphContainer.value) return
 
   Graph = (ForceGraph3D as any)()(graphContainer.value)
     .graphData({ nodes: nodes.value, links: links.value })
     .nodeLabel('label')
-    .nodeAutoColorBy('type')
-    .nodeVal((node: any) => {
-      const base = 5;
-      const bonus = node.description ? Math.min(node.description.length / 50, 15) : 0;
-      return base + bonus;
+    .nodeThreeObject((node: any) => {
+      // Base size calculation derived from weight (number of edges)
+      const baseSize = 4
+      const weightBonus = (node.val || 0) * 1.5
+      const size = baseSize + weightBonus
+
+      const color = getNodeColor(node.type)
+      const t = (node.type || '').toLowerCase()
+
+      let geometry
+      if (t.includes('申报条件') || t.includes('requirement')) {
+        // Box for conditions
+        geometry = new THREE.BoxGeometry(size, size, size)
+      } else if (t.includes('组织') || t.includes('organization')) {
+        // Cylinder for organizations
+        geometry = new THREE.CylinderGeometry(size/1.5, size/1.5, size*1.5, 16)
+      } else {
+        // Default sphere
+        geometry = new THREE.SphereGeometry(size, 16, 16)
+      }
+
+      const material = new THREE.MeshLambertMaterial({
+        color: color,
+        transparent: true,
+        opacity: 0.85
+      })
+      const mesh = new THREE.Mesh(geometry, material)
+      return mesh
     })
     .linkDirectionalArrowLength(4)
     .linkDirectionalArrowRelPos(1)
@@ -101,9 +193,22 @@ const initGraph = () => {
       selectedEdge.value = null
       connectedNeighbors.value = []
     })
+
+  // Set up lights for 3D objects
+  Graph.scene().add(new THREE.AmbientLight(0xbbbbbb))
+  const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6)
+  directionalLight.position.set(1, 1, 1)
+  Graph.scene().add(directionalLight)
 }
 
 onMounted(() => {
+  window.addEventListener('mousemove', resetIdleTimer)
+  window.addEventListener('keydown', resetIdleTimer)
+  window.addEventListener('mousedown', resetIdleTimer)
+  window.addEventListener('wheel', resetIdleTimer)
+  resetIdleTimer()
+  animateRotation()
+
   initGraph()
   fetchGraphData()
 
@@ -116,6 +221,13 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', resetIdleTimer)
+  window.removeEventListener('keydown', resetIdleTimer)
+  window.removeEventListener('mousedown', resetIdleTimer)
+  window.removeEventListener('wheel', resetIdleTimer)
+  if (idleTimeout.value) clearTimeout(idleTimeout.value)
+  if (animationFrameId !== null) cancelAnimationFrame(animationFrameId)
+
   if (Graph) Graph._destructor()
 })
 
@@ -126,7 +238,7 @@ const openAddNode = () => {
 
 const submitNode = async () => {
   try {
-    await axios.post('http://localhost:8000/api/nodes', nodeForm.value)
+    await axios.post('/api/nodes', nodeForm.value)
     ElMessage.success('节点添加成功')
     nodeDialogVisible.value = false
     fetchGraphData()
@@ -139,7 +251,7 @@ const handleDeleteNode = async () => {
   if (!selectedNode.value) return
   try {
     await ElMessageBox.confirm('确定要删除此知识节点及其关联边吗？', '警告', { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' })
-    await axios.delete(`http://localhost:8000/api/nodes/${selectedNode.value.id}`)
+    await axios.delete(`/api/nodes/${selectedNode.value.id}`)
     ElMessage.success('节点已删除')
     selectedNode.value = null
     fetchGraphData()
@@ -155,7 +267,7 @@ const openAddEdge = () => {
 
 const submitEdge = async () => {
   try {
-    await axios.post('http://localhost:8000/api/edges', edgeForm.value)
+    await axios.post('/api/edges', edgeForm.value)
     ElMessage.success('关联添加成功')
     edgeDialogVisible.value = false
     fetchGraphData()
@@ -169,7 +281,7 @@ const handleDeleteEdge = async () => {
   try {
     await ElMessageBox.confirm('确定要删除此逻辑关联吗？', '警告', { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' })
     const edgeId = selectedEdge.value.id
-    await axios.delete(`http://localhost:8000/api/edges/${edgeId}`)
+    await axios.delete(`/api/edges/${edgeId}`)
     ElMessage.success('关联已删除')
     selectedEdge.value = null
     fetchGraphData()

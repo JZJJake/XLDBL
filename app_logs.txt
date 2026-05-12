@@ -1,0 +1,71 @@
+
+> frontend@0.0.0 dev
+> vite
+
+
+  VITE v8.0.12  ready in 464 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+2:42:03 PM [vite] (client) [optimizer] bundling dependencies...
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  80%|███████▉  | 159/199 [00:00<00:00, 1589.20it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1934.14it/s]
+INFO:     Will watch for changes in these directories: ['/app/backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [190189] using WatchFiles
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 2005.70it/s]
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  91%|█████████ | 181/199 [00:00<00:00, 1792.66it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1901.97it/s]
+INFO:     Started server process [193470]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:36142 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36142 - "GET /api/graph HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41662 - "POST /api/nodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53322 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53322 - "GET /api/graph HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48036 - "POST /api/nodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58858 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58858 - "GET /api/graph HTTP/1.1" 200 OK
+2:52:34 PM [vite] (client) hmr update /src/components/GraphView.vue
+WARNING:  WatchFiles detected changes in 'main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [193470]
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  57%|█████▋    | 114/199 [00:00<00:00, 1131.09it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1339.07it/s]
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  83%|████████▎ | 166/199 [00:00<00:00, 1656.26it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1750.51it/s]
+WARNING:  WatchFiles detected changes in 'main.py'. Reloading...
+INFO:     Started server process [220841]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [220841]
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  63%|██████▎   | 125/199 [00:00<00:00, 1248.62it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1364.65it/s]
+Loading Sentence Transformer model (this may take a while on first run)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights:  59%|█████▉    | 117/199 [00:00<00:00, 1166.76it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 1411.90it/s]
+INFO:     Started server process [222993]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+2:58:09 PM [vite] (client) hmr update /src/App.vue, /src/App.vue?vue&type=style&index=0&lang.css
+3:01:18 PM [vite] (client) hmr update /src/components/ChatPanel.vue?vue&type=style&index=0&scoped=2032b97f&lang.css
+3:05:51 PM [vite] (client) hmr update /src/components/DocumentExplorer.vue?vue&type=style&index=0&scoped=7760d042&lang.css
+INFO:     127.0.0.1:50608 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50608 - "GET /api/graph HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50610 - "GET /api/graph HTTP/1.1" 200 OK
+3:16:40 PM [vite] (client) hmr update /src/components/ChatPanel.vue
+3:16:40 PM [vite] (client) hmr update /src/components/DocumentExplorer.vue
+3:16:40 PM [vite] (client) hmr update /src/components/UploadPanel.vue
+3:16:40 PM [vite] (client) hmr update /src/App.vue
+3:16:40 PM [vite] (client) hmr update /src/components/GraphView.vue
+3:21:07 PM [vite] vite.config.ts changed, restarting server...
+3:21:07 PM [vite] server restarted.
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.0.2:5173/

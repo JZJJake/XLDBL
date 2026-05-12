@@ -65,6 +65,11 @@ def get_db_cursor():
     return sqlite_conn.cursor()
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50):
+    if "$END$" in text:
+        # Split explicitly by user marker, removing empty chunks
+        raw_chunks = text.split("$END$")
+        return [c.strip() for c in raw_chunks if c.strip()]
+
     chunks = []
     start = 0
     while start < len(text):
@@ -87,14 +92,14 @@ def extract_kg_from_text(text: str):
     For each Node, provide:
       - "id": a unique string identifier.
       - "label": the name of the entity.
-      - "type": category (e.g., Concept, Person, Technology, Organization).
+      - "type": category (e.g., Concept, Person, Technology, Organization). ALL TYPES MUST BE IN CHINESE (e.g., 概念, 人物, 技术, 组织, 申报条件).
       - "description": A rich, detailed textual explanation of what this entity is, based on the text.
 
     For each Edge, provide:
       - "id": a unique string identifier.
       - "source": the id of the source node.
       - "target": the id of the target node.
-      - "relation": a short label for the relationship (e.g., "created_by", "depends_on").
+      - "relation": a short label for the relationship (e.g., "created_by", "depends_on"). THIS RELATION MUST BE IN CHINESE (e.g., 包含, 属于, 依赖于, 关联条件).
       - "description": A detailed explanation clarifying how and why these two entities are connected in this context.
 
     Text snippet to analyze:
@@ -219,7 +224,20 @@ def get_graph():
     cursor.execute("SELECT id, source, target, relation, description FROM edges")
     edges = [{"id": row[0], "source": row[1], "target": row[2], "relation": row[3], "description": row[4] or ""} for row in cursor.fetchall()]
 
-    return {"nodes": nodes, "links": edges}
+    # Try getting chunk counts from chromadb
+    try:
+        chroma_data = chroma_collection.get()
+        chunk_count = len(chroma_data.get("ids", []))
+    except Exception:
+        chunk_count = 0
+
+    stats = {
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "chunk_count": chunk_count
+    }
+
+    return {"nodes": nodes, "links": edges, "stats": stats}
 
 # Node Maintenance
 @app.post("/api/nodes")
@@ -335,6 +353,12 @@ def chat_with_knowledge(req: ChatRequest):
 
     Provide a comprehensive, accurate, and insightful response. If the context does not contain the answer, say "I don't have enough information to answer that based on the uploaded knowledge base."
 
+    IMPORTANT FORMATTING RULES:
+    1. The output must strictly follow formal official document (公文) formatting.
+    2. Start every paragraph with two full-width Chinese spaces (　　).
+    3. Do NOT use markdown symbols (e.g., *, #, -, etc.) or special symbols. Just plain text.
+    4. Provide clear, continuous paragraphs.
+
     --- Raw Document Snippets ---
     {raw_context}
 
@@ -349,7 +373,7 @@ def chat_with_knowledge(req: ChatRequest):
         response = openai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "You are a highly intelligent and helpful knowledge assistant utilizing GraphRAG. Analyze the provided multi-modal context logically."},
+                {"role": "system", "content": "You are a highly intelligent and helpful knowledge assistant utilizing GraphRAG. You MUST answer in formal Chinese official document format with NO markdown symbols and ALWAYS start paragraphs with 2 full-width spaces."},
                 {"role": "user", "content": prompt}
             ]
         )

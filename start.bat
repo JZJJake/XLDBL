@@ -50,10 +50,10 @@ echo ========================================================
 start "FastAPI Backend" cmd /k "set HF_ENDPOINT=https://hf-mirror.com && cd backend && title FastAPI Backend && python main.py"
 
 :: Start Frontend in a new window
-start "Vue Frontend" cmd /k "cd frontend && title Vue Frontend && npm run dev"
+start "Vue Frontend" cmd /k "cd frontend && title Vue Frontend && npm run dev -- --host 0.0.0.0"
 
 echo Services have been started in separate windows!
-echo Backend is running on http://127.0.0.1:8000
-echo Frontend is running on http://127.0.0.1:5173 (Please check the Vue Frontend window for exact URL)
+echo Backend is running on http://0.0.0.0:8000
+echo Frontend is running on http://0.0.0.0:5173 (Please check the Vue Frontend window for exact IP URLs)
 echo.
 pause
