@@ -144,25 +144,66 @@ async def upload_file(file: UploadFile = File(...)):
     # 2. Extract Deep KG using DeepSeek
     kg_data = extract_kg_from_text(text)
 
-    # 3. Store KG in SQLite (Insert or Replace ensures we dynamically update descriptions on collisions)
+    # 3. Deduplicate and Store KG in SQLite
     cursor = get_db_cursor()
     nodes_added = 0
     edges_added = 0
+
+    # ID Mapping for deduplication (Old ID -> New/Existing ID)
+    id_map = {}
+
     for node in kg_data.get("nodes", []):
         try:
-            cursor.execute("INSERT OR REPLACE INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
-                           (node["id"], node["label"], node.get("type", "Entity"), node.get("description", "")))
-            nodes_added += 1
+            label = node["label"].strip()
+            # Check if a node with this exact label already exists
+            cursor.execute("SELECT id, description FROM nodes WHERE label = ? COLLATE NOCASE", (label,))
+            existing = cursor.fetchone()
+
+            if existing:
+                # Merge logic: keep existing ID, append description if it's new and useful
+                existing_id = existing[0]
+                existing_desc = existing[1] or ""
+                new_desc = node.get("description", "")
+
+                # If new description has info not in existing, we append it
+                if new_desc and new_desc not in existing_desc:
+                    merged_desc = existing_desc + "\n" + new_desc if existing_desc else new_desc
+                    cursor.execute("UPDATE nodes SET description = ? WHERE id = ?", (merged_desc, existing_id))
+
+                id_map[node["id"]] = existing_id
+            else:
+                # Truly new node
+                new_id = node["id"]
+                id_map[new_id] = new_id
+                cursor.execute("INSERT INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
+                               (new_id, label, node.get("type", "Entity"), node.get("description", "")))
+                nodes_added += 1
+
         except Exception as e:
-            print(f"Error inserting node: {e}")
+            print(f"Error processing node: {e}")
 
     for edge in kg_data.get("edges", []):
         try:
-            cursor.execute("INSERT OR REPLACE INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
-                           (edge["id"], edge["source"], edge["target"], edge["relation"], edge.get("description", "")))
-            edges_added += 1
+            # Remap source and target IDs to merged ones
+            source_id = id_map.get(edge["source"], edge["source"])
+            target_id = id_map.get(edge["target"], edge["target"])
+
+            # Avoid self-loops
+            if source_id == target_id:
+                continue
+
+            # Check if this exact edge already exists between these two nodes
+            cursor.execute("SELECT id FROM edges WHERE source = ? AND target = ? AND relation = ? COLLATE NOCASE",
+                           (source_id, target_id, edge["relation"]))
+            existing_edge = cursor.fetchone()
+
+            if not existing_edge:
+                cursor.execute("INSERT INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
+                               (edge["id"], source_id, target_id, edge["relation"], edge.get("description", "")))
+                edges_added += 1
+
         except Exception as e:
-             print(f"Error inserting edge: {e}")
+             print(f"Error processing edge: {e}")
 
     sqlite_conn.commit()
 
@@ -233,7 +274,7 @@ def export_database():
             "id": data['ids'][i],
             "content": data['documents'][i],
             "source": data['metadatas'][i].get("source", ""),
-            "vector": data['embeddings'][i] if data.get('embeddings') is not None else []
+            "vector": data['embeddings'][i].tolist() if data.get('embeddings') is not None and hasattr(data['embeddings'][i], 'tolist') else data['embeddings'][i] if data.get('embeddings') is not None else []
         }
         export_data["chunks"].append(chunk_obj)
 
@@ -319,3 +360,25 @@ def chat_with_knowledge(req: ChatRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+# Tree View / Raw Document API
+@app.get("/api/documents")
+def get_documents():
+    data = chroma_collection.get(include=["metadatas", "documents"])
+
+    # Group chunks by source document
+    docs_map = {}
+
+    for i in range(len(data['ids'])):
+        source = data['metadatas'][i].get("source", "未知来源")
+        if source not in docs_map:
+            docs_map[source] = {"id": source, "label": source, "children": []}
+
+        chunk_preview = data['documents'][i][:50].replace('\n', ' ') + "..."
+        docs_map[source]["children"].append({
+            "id": data['ids'][i],
+            "label": f"片段 {len(docs_map[source]['children']) + 1}: {chunk_preview}",
+            "content": data['documents'][i]
+        })
+
+    return list(docs_map.values())

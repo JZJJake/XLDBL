@@ -33,7 +33,7 @@ const fetchGraphData = async () => {
       Graph.graphData({ nodes: nodes.value, links: links.value })
     }
   } catch (error) {
-    ElMessage.error('Failed to load knowledge graph data')
+    ElMessage.error('无法加载图谱数据')
   }
 }
 
@@ -42,7 +42,6 @@ const updateNeighbors = (node: any) => {
     connectedNeighbors.value = []
     return
   }
-  // Find all edges connected to this node
   const relatedLinks = links.value.filter(l =>
     (l.source.id || l.source) === node.id || (l.target.id || l.target) === node.id
   )
@@ -57,7 +56,7 @@ const updateNeighbors = (node: any) => {
       direction: isSource ? 'outgoing' : 'incoming',
       node: targetNode
     }
-  }).filter(item => item.node) // Filter out nulls if graph is slightly inconsistent
+  }).filter(item => item.node)
 
   connectedNeighbors.value = neighbors
 }
@@ -70,14 +69,13 @@ const initGraph = () => {
     .nodeLabel('label')
     .nodeAutoColorBy('type')
     .nodeVal((node: any) => {
-      // Make nodes with longer descriptions visually larger (more "weight")
       const base = 5;
       const bonus = node.description ? Math.min(node.description.length / 50, 15) : 0;
       return base + bonus;
     })
     .linkDirectionalArrowLength(4)
     .linkDirectionalArrowRelPos(1)
-    .linkDirectionalParticles(2) // Flowing particles showing data logic direction
+    .linkDirectionalParticles(2)
     .linkDirectionalParticleSpeed(0.005)
     .linkLabel('relation')
     .onNodeClick((node: any) => {
@@ -85,7 +83,6 @@ const initGraph = () => {
       selectedEdge.value = null
       updateNeighbors(node)
 
-      // Smooth camera zoom
       const distance = 80;
       const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
       Graph.cameraPosition(
@@ -122,7 +119,6 @@ onBeforeUnmount(() => {
   if (Graph) Graph._destructor()
 })
 
-// Add logic
 const openAddNode = () => {
   nodeForm.value = { id: 'node_' + Date.now(), label: '', type: 'Entity', description: '' }
   nodeDialogVisible.value = true
@@ -131,24 +127,24 @@ const openAddNode = () => {
 const submitNode = async () => {
   try {
     await axios.post('http://localhost:8000/api/nodes', nodeForm.value)
-    ElMessage.success('Node added')
+    ElMessage.success('节点添加成功')
     nodeDialogVisible.value = false
     fetchGraphData()
   } catch (error) {
-    ElMessage.error('Failed to add node')
+    ElMessage.error('添加节点失败')
   }
 }
 
 const handleDeleteNode = async () => {
   if (!selectedNode.value) return
   try {
-    await ElMessageBox.confirm('Delete this node and its edges?', 'Warning', { type: 'warning' })
+    await ElMessageBox.confirm('确定要删除此知识节点及其关联边吗？', '警告', { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' })
     await axios.delete(`http://localhost:8000/api/nodes/${selectedNode.value.id}`)
-    ElMessage.success('Node deleted')
+    ElMessage.success('节点已删除')
     selectedNode.value = null
     fetchGraphData()
   } catch (e) {
-    if (e !== 'cancel') ElMessage.error('Failed to delete node')
+    if (e !== 'cancel') ElMessage.error('删除节点失败')
   }
 }
 
@@ -160,25 +156,25 @@ const openAddEdge = () => {
 const submitEdge = async () => {
   try {
     await axios.post('http://localhost:8000/api/edges', edgeForm.value)
-    ElMessage.success('Edge added')
+    ElMessage.success('关联添加成功')
     edgeDialogVisible.value = false
     fetchGraphData()
   } catch (error) {
-    ElMessage.error('Failed to add edge')
+    ElMessage.error('添加关联失败')
   }
 }
 
 const handleDeleteEdge = async () => {
   if (!selectedEdge.value) return
   try {
-    await ElMessageBox.confirm('Delete this edge?', 'Warning', { type: 'warning' })
+    await ElMessageBox.confirm('确定要删除此逻辑关联吗？', '警告', { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' })
     const edgeId = selectedEdge.value.id
     await axios.delete(`http://localhost:8000/api/edges/${edgeId}`)
-    ElMessage.success('Edge deleted')
+    ElMessage.success('关联已删除')
     selectedEdge.value = null
     fetchGraphData()
   } catch (e) {
-    if (e !== 'cancel') ElMessage.error('Failed to delete edge')
+    if (e !== 'cancel') ElMessage.error('删除关联失败')
   }
 }
 
@@ -189,19 +185,17 @@ defineExpose({ fetchGraphData })
   <div class="graph-wrapper">
     <div ref="graphContainer" class="graph-canvas"></div>
 
-    <!-- Top Right Quick Actions -->
     <div class="toolbar">
-      <el-button type="primary" :icon="Plus" @click="openAddNode">New Node</el-button>
-      <el-button type="primary" :icon="Plus" @click="openAddEdge">New Edge</el-button>
+      <el-button type="primary" :icon="Plus" @click="openAddNode">新增知识点</el-button>
+      <el-button type="primary" :icon="Plus" @click="openAddEdge">新增逻辑边</el-button>
     </div>
 
-    <!-- Right Side Information Panel (GraphRAG Context View) -->
     <transition name="el-zoom-in-right">
       <div v-if="selectedNode || selectedEdge" class="info-panel">
         <div class="panel-header">
           <h3>
             <el-icon><InfoFilled /></el-icon>
-            {{ selectedNode ? 'Node Details' : 'Edge Details' }}
+            {{ selectedNode ? '知识点详情' : '逻辑关联详情' }}
           </h3>
         </div>
 
@@ -211,12 +205,12 @@ defineExpose({ fetchGraphData })
             <el-tag size="small" type="success" class="mb-3">{{ selectedNode.type || 'Entity' }}</el-tag>
 
             <div class="section">
-              <h4>Description / Context</h4>
-              <p class="desc-text">{{ selectedNode.description || 'No detailed context available.' }}</p>
+              <h4>背景描述</h4>
+              <p class="desc-text">{{ selectedNode.description || '暂无详细描述。' }}</p>
             </div>
 
             <div class="section" v-if="connectedNeighbors.length > 0">
-              <h4>Knowledge Network ({{ connectedNeighbors.length }})</h4>
+              <h4>关联知识网 ({{ connectedNeighbors.length }})</h4>
               <ul class="neighbor-list">
                 <li v-for="(nb, idx) in connectedNeighbors" :key="idx">
                   <span class="relation-badge" :class="nb.direction">{{ nb.relation }}</span>
@@ -226,15 +220,15 @@ defineExpose({ fetchGraphData })
             </div>
 
             <div class="actions">
-              <el-button type="danger" size="small" :icon="Delete" @click="handleDeleteNode">Delete Entity</el-button>
+              <el-button type="danger" size="small" :icon="Delete" @click="handleDeleteNode">删除知识点</el-button>
             </div>
           </template>
 
           <template v-if="selectedEdge">
-            <h2 class="title">Relationship: {{ selectedEdge.relation }}</h2>
+            <h2 class="title">逻辑：{{ selectedEdge.relation }}</h2>
 
             <div class="section">
-              <h4>Connection Logic</h4>
+              <h4>关联方向</h4>
               <div class="connection-logic">
                  <strong>{{ selectedEdge.source.label || selectedEdge.source }}</strong>
                  <span class="arrow">→</span>
@@ -243,56 +237,54 @@ defineExpose({ fetchGraphData })
             </div>
 
             <div class="section">
-              <h4>Relationship Details</h4>
-              <p class="desc-text">{{ selectedEdge.description || 'No detailed context available.' }}</p>
+              <h4>逻辑说明</h4>
+              <p class="desc-text">{{ selectedEdge.description || '暂无详细描述。' }}</p>
             </div>
 
             <div class="actions">
-              <el-button type="danger" size="small" :icon="Delete" @click="handleDeleteEdge">Delete Relationship</el-button>
+              <el-button type="danger" size="small" :icon="Delete" @click="handleDeleteEdge">删除关联边</el-button>
             </div>
           </template>
         </div>
       </div>
     </transition>
 
-    <!-- Node Dialog -->
-    <el-dialog v-model="nodeDialogVisible" title="Add Knowledge Node" width="500px">
+    <el-dialog v-model="nodeDialogVisible" title="新增知识节点" width="500px">
       <el-form :model="nodeForm" label-width="90px">
-        <el-form-item label="ID"><el-input v-model="nodeForm.id" /></el-form-item>
-        <el-form-item label="Entity Name"><el-input v-model="nodeForm.label" /></el-form-item>
-        <el-form-item label="Category"><el-input v-model="nodeForm.type" placeholder="e.g., Person, Concept, Organization" /></el-form-item>
-        <el-form-item label="Description">
-          <el-input type="textarea" :rows="4" v-model="nodeForm.description" placeholder="Rich textual context about this entity..." />
+        <el-form-item label="标识ID"><el-input v-model="nodeForm.id" placeholder="唯一英文字母或数字组合" /></el-form-item>
+        <el-form-item label="知识点名称"><el-input v-model="nodeForm.label" /></el-form-item>
+        <el-form-item label="分类"><el-input v-model="nodeForm.type" placeholder="如：概念、人物、技术、组织" /></el-form-item>
+        <el-form-item label="描述">
+          <el-input type="textarea" :rows="4" v-model="nodeForm.description" placeholder="在此输入有关该知识点的详细上下文内容..." />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="nodeDialogVisible = false">Cancel</el-button>
-        <el-button type="primary" @click="submitNode">Save Node</el-button>
+        <el-button @click="nodeDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitNode">保存节点</el-button>
       </template>
     </el-dialog>
 
-    <!-- Edge Dialog -->
-    <el-dialog v-model="edgeDialogVisible" title="Add Relationship Edge" width="500px">
+    <el-dialog v-model="edgeDialogVisible" title="新增逻辑关联边" width="500px">
       <el-form :model="edgeForm" label-width="90px">
-        <el-form-item label="ID"><el-input v-model="edgeForm.id" /></el-form-item>
-        <el-form-item label="Source">
-          <el-select filterable v-model="edgeForm.source" placeholder="Select Source Entity" style="width: 100%">
+        <el-form-item label="标识ID"><el-input v-model="edgeForm.id" /></el-form-item>
+        <el-form-item label="源节点">
+          <el-select filterable v-model="edgeForm.source" placeholder="请选择来源节点" style="width: 100%">
             <el-option v-for="n in nodes" :key="n.id" :label="n.label" :value="n.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Target">
-          <el-select filterable v-model="edgeForm.target" placeholder="Select Target Entity" style="width: 100%">
+        <el-form-item label="目标节点">
+          <el-select filterable v-model="edgeForm.target" placeholder="请选择目标节点" style="width: 100%">
             <el-option v-for="n in nodes" :key="n.id" :label="n.label" :value="n.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Relation"><el-input v-model="edgeForm.relation" placeholder="e.g., works_for, invented" /></el-form-item>
-        <el-form-item label="Description">
-          <el-input type="textarea" :rows="4" v-model="edgeForm.description" placeholder="Explain the logic behind this relationship..." />
+        <el-form-item label="关系定义"><el-input v-model="edgeForm.relation" placeholder="如：包含、发明了、属于" /></el-form-item>
+        <el-form-item label="逻辑说明">
+          <el-input type="textarea" :rows="4" v-model="edgeForm.description" placeholder="解释这两者产生这种逻辑关系的原因或背景..." />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="edgeDialogVisible = false">Cancel</el-button>
-        <el-button type="primary" @click="submitEdge">Save Edge</el-button>
+        <el-button @click="edgeDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitEdge">保存关联</el-button>
       </template>
     </el-dialog>
 
@@ -304,7 +296,7 @@ defineExpose({ fetchGraphData })
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
   overflow: hidden;
-  background-color: #111; /* Dark background looks better for 3D graphs */
+  background-color: #111;
 }
 .graph-canvas { width: 100%; height: 100%; }
 
@@ -315,7 +307,6 @@ defineExpose({ fetchGraphData })
   z-index: 10;
 }
 
-/* Info Panel Styling */
 .info-panel {
   position: absolute;
   top: 70px;

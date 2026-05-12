@@ -4,7 +4,7 @@ import axios from 'axios'
 import { Position } from '@element-plus/icons-vue'
 
 const messages = ref<{role: string, content: string}[]>([
-  { role: 'assistant', content: 'Hello! You can ask me questions based on the uploaded knowledge base.' }
+  { role: 'assistant', content: '您好！我是 DeepSeek 知识库助手。您可以向我提问，我会结合图谱和文档内容为您解答。' }
 ])
 const inputMessage = ref('')
 const isLoading = ref(false)
@@ -31,7 +31,7 @@ const sendMessage = async () => {
     const res = await axios.post('http://localhost:8000/api/chat', { message: userMsg })
     messages.value.push({ role: 'assistant', content: res.data.reply })
   } catch (error) {
-    messages.value.push({ role: 'assistant', content: 'Error: Could not reach the server or DeepSeek API.' })
+    messages.value.push({ role: 'assistant', content: '错误：无法连接到服务器或大模型接口。' })
   } finally {
     isLoading.value = false
     scrollToBottom()
@@ -41,7 +41,7 @@ const sendMessage = async () => {
 
 <template>
   <div class="chat-panel">
-    <h3>Knowledge Base Chat (RAG)</h3>
+    <h3>DeepSeek 深度交流</h3>
     <div class="chat-body" ref="chatBodyRef">
       <div
         v-for="(msg, index) in messages"
@@ -57,7 +57,7 @@ const sendMessage = async () => {
     <div class="chat-input">
       <el-input
         v-model="inputMessage"
-        placeholder="Ask something..."
+        placeholder="向知识库提问..."
         @keyup.enter="sendMessage"
         :disabled="isLoading"
       >
@@ -79,6 +79,9 @@ const sendMessage = async () => {
 .chat-panel h3 {
   margin-top: 0;
   color: #303133;
+  font-size: 16px;
+  border-bottom: 2px solid #409EFC;
+  padding-bottom: 10px;
 }
 .chat-body {
   flex: 1;
