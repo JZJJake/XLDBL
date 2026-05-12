@@ -1,13 +1,13 @@
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 import uuid
 import json
-import os
-import shutil
-from typing import List, Optional
 import sqlite3
+from typing import List, Optional
 
 # Import our database and model setup
 from database import init_sqlite, init_chroma, init_embedding_model
@@ -26,7 +26,6 @@ app.add_middleware(
 # Initialize systems
 sqlite_conn = init_sqlite()
 chroma_client, chroma_collection = init_chroma()
-# Loading the model here ensures it's kept in memory while the server runs
 embedding_model = init_embedding_model()
 
 # Setup OpenAI for DeepSeek
@@ -48,12 +47,14 @@ class NodeBase(BaseModel):
     id: str
     label: str
     type: Optional[str] = "Entity"
+    description: Optional[str] = ""
 
 class EdgeBase(BaseModel):
     id: str
     source: str
     target: str
     relation: str
+    description: Optional[str] = ""
 
 class ChatRequest(BaseModel):
     message: str
@@ -77,19 +78,33 @@ def extract_kg_from_text(text: str):
         return {"nodes": [], "edges": []}
 
     prompt = f"""
-    Analyze the following text and extract a Knowledge Graph.
-    Identify key entities (Nodes) and the relationships between them (Edges).
-    Respond strictly in JSON format with two keys: "nodes" and "edges".
-    Each node should have "id" (unique string), "label" (string), "type" (string).
-    Each edge should have "id" (unique string), "source" (node id), "target" (node id), "relation" (string).
+    Deeply analyze the following text and construct a comprehensive Knowledge Graph.
+    Your goal is not just to extract entities, but to provide rich content analysis and detailed definitions.
 
-    Text: {text[:2000]} # Limit to avoid token overflow
+    Identify key entities (Nodes) and the logical relationships between them (Edges).
+    Respond strictly in JSON format with two keys: "nodes" and "edges".
+
+    For each Node, provide:
+      - "id": a unique string identifier.
+      - "label": the name of the entity.
+      - "type": category (e.g., Concept, Person, Technology, Organization).
+      - "description": A rich, detailed textual explanation of what this entity is, based on the text.
+
+    For each Edge, provide:
+      - "id": a unique string identifier.
+      - "source": the id of the source node.
+      - "target": the id of the target node.
+      - "relation": a short label for the relationship (e.g., "created_by", "depends_on").
+      - "description": A detailed explanation clarifying how and why these two entities are connected in this context.
+
+    Text snippet to analyze:
+    {text[:2500]}
     """
     try:
         response = openai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "You are a data extraction assistant. Output ONLY valid JSON."},
+                {"role": "system", "content": "You are a professional knowledge extraction analyst. Output ONLY valid JSON."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"}
@@ -126,25 +141,25 @@ async def upload_file(file: UploadFile = File(...)):
         metadatas=metadata
     )
 
-    # 2. Extract KG using DeepSeek
+    # 2. Extract Deep KG using DeepSeek
     kg_data = extract_kg_from_text(text)
 
-    # 3. Store KG in SQLite
+    # 3. Store KG in SQLite (Insert or Replace ensures we dynamically update descriptions on collisions)
     cursor = get_db_cursor()
     nodes_added = 0
     edges_added = 0
     for node in kg_data.get("nodes", []):
         try:
-            cursor.execute("INSERT OR REPLACE INTO nodes (id, label, type) VALUES (?, ?, ?)",
-                           (node["id"], node["label"], node.get("type", "Entity")))
+            cursor.execute("INSERT OR REPLACE INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
+                           (node["id"], node["label"], node.get("type", "Entity"), node.get("description", "")))
             nodes_added += 1
         except Exception as e:
             print(f"Error inserting node: {e}")
 
     for edge in kg_data.get("edges", []):
         try:
-            cursor.execute("INSERT OR REPLACE INTO edges (id, source, target, relation) VALUES (?, ?, ?, ?)",
-                           (edge["id"], edge["source"], edge["target"], edge["relation"]))
+            cursor.execute("INSERT OR REPLACE INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
+                           (edge["id"], edge["source"], edge["target"], edge["relation"], edge.get("description", "")))
             edges_added += 1
         except Exception as e:
              print(f"Error inserting edge: {e}")
@@ -157,11 +172,11 @@ async def upload_file(file: UploadFile = File(...)):
 @app.get("/api/graph")
 def get_graph():
     cursor = get_db_cursor()
-    cursor.execute("SELECT id, label, type FROM nodes")
-    nodes = [{"id": row[0], "label": row[1], "type": row[2]} for row in cursor.fetchall()]
+    cursor.execute("SELECT id, label, type, description FROM nodes")
+    nodes = [{"id": row[0], "label": row[1], "type": row[2], "description": row[3] or ""} for row in cursor.fetchall()]
 
-    cursor.execute("SELECT id, source, target, relation FROM edges")
-    edges = [{"id": row[0], "source": row[1], "target": row[2], "relation": row[3]} for row in cursor.fetchall()]
+    cursor.execute("SELECT id, source, target, relation, description FROM edges")
+    edges = [{"id": row[0], "source": row[1], "target": row[2], "relation": row[3], "description": row[4] or ""} for row in cursor.fetchall()]
 
     return {"nodes": nodes, "links": edges}
 
@@ -170,7 +185,8 @@ def get_graph():
 def add_node(node: NodeBase):
     cursor = get_db_cursor()
     try:
-        cursor.execute("INSERT INTO nodes (id, label, type) VALUES (?, ?, ?)", (node.id, node.label, node.type))
+        cursor.execute("INSERT INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
+                       (node.id, node.label, node.type, node.description))
         sqlite_conn.commit()
         return {"success": True}
     except Exception as e:
@@ -189,8 +205,8 @@ def delete_node(node_id: str):
 def add_edge(edge: EdgeBase):
     cursor = get_db_cursor()
     try:
-        cursor.execute("INSERT INTO edges (id, source, target, relation) VALUES (?, ?, ?, ?)",
-                       (edge.id, edge.source, edge.target, edge.relation))
+        cursor.execute("INSERT INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
+                       (edge.id, edge.source, edge.target, edge.relation, edge.description))
         sqlite_conn.commit()
         return {"success": True}
     except Exception as e:
@@ -206,7 +222,6 @@ def delete_edge(edge_id: str):
 # Export for LLM Integration
 @app.get("/api/export")
 def export_database():
-    # Only exporting ChromaDB knowledge chunks as requested by user
     data = chroma_collection.get(include=["documents", "metadatas", "embeddings"])
 
     export_data = {
@@ -229,37 +244,71 @@ def export_database():
     return FileResponse(export_path, filename="knowledge_base_export.json", media_type="application/json")
 
 
-# Chat/RAG endpoint
+# Advanced GraphRAG Chat endpoint
 @app.post("/api/chat")
 def chat_with_knowledge(req: ChatRequest):
     if not openai_client:
         return {"reply": "DeepSeek API key not configured. Cannot generate response."}
 
-    # Search vector database
+    # 1. Retrieve Raw Text Context from Vector Database
     query_vector = embedding_model.encode([req.message]).tolist()
     results = chroma_collection.query(
         query_embeddings=query_vector,
         n_results=3
     )
-
     context_docs = results['documents'][0] if results['documents'] else []
-    context = "\n".join(context_docs)
+    raw_context = "\n".join(context_docs)
+
+    # 2. Retrieve Graph Context (Simple GraphRAG approximation: find nodes matching query terms)
+    # In a full-scale GraphRAG, we would vectorize the nodes too, but for speed we do keyword matching here.
+    cursor = get_db_cursor()
+    cursor.execute("SELECT label, description FROM nodes")
+    all_nodes = cursor.fetchall()
+
+    graph_context_lines = []
+    for label, desc in all_nodes:
+        # If the node label is mentioned in the question or the retrieved docs, we pull its rich info
+        if label.lower() in req.message.lower() or (label.lower() in raw_context.lower()):
+            graph_context_lines.append(f"- Entity [{label}]: {desc}")
+
+    # Also fetch relationships for those matching nodes to provide logical topology
+    for label, _ in all_nodes:
+        if label.lower() in req.message.lower():
+            cursor.execute('''
+                SELECT n2.label, e.relation, e.description
+                FROM edges e
+                JOIN nodes n1 ON e.source = n1.id
+                JOIN nodes n2 ON e.target = n2.id
+                WHERE n1.label = ?
+            ''', (label,))
+            for target_label, rel, rel_desc in cursor.fetchall():
+                graph_context_lines.append(f"- Relationship [{label}] -> ({rel}) -> [{target_label}]: {rel_desc}")
+
+    graph_context = "\n".join(graph_context_lines)
 
     prompt = f"""
-    Answer the user's question based on the following context retrieved from the knowledge base.
-    If the context does not contain the answer, say "I don't have enough information to answer that based on the uploaded documents."
+    You are an advanced knowledge assistant utilizing a GraphRAG architecture.
+    You will answer the user's question by synthesizing information from two sources:
+    1. Raw Document Snippets (Semantic Vector Search)
+    2. Knowledge Graph Entities and Relationships (Deep logical connections)
 
-    Context:
-    {context}
+    Provide a comprehensive, accurate, and insightful response. If the context does not contain the answer, say "I don't have enough information to answer that based on the uploaded knowledge base."
 
-    Question: {req.message}
+    --- Raw Document Snippets ---
+    {raw_context}
+
+    --- Knowledge Graph Context ---
+    {graph_context}
+
+    ---
+    User Question: {req.message}
     """
 
     try:
         response = openai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "You are a helpful knowledge assistant."},
+                {"role": "system", "content": "You are a highly intelligent and helpful knowledge assistant utilizing GraphRAG. Analyze the provided multi-modal context logically."},
                 {"role": "user", "content": prompt}
             ]
         )

@@ -11,16 +11,16 @@ def test_graph_endpoints():
     cursor.execute("DELETE FROM nodes")
     sqlite_conn.commit()
 
-    # 2. Add Node
-    res = client.post("/api/nodes", json={"id": "test_n1", "label": "Node 1", "type": "Entity"})
+    # 2. Add Node (With new description field)
+    res = client.post("/api/nodes", json={"id": "test_n1", "label": "Node 1", "type": "Entity", "description": "Desc 1"})
     assert res.status_code == 200
     assert res.json() == {"success": True}
 
     # 3. Add second Node
-    res = client.post("/api/nodes", json={"id": "test_n2", "label": "Node 2", "type": "Entity"})
+    res = client.post("/api/nodes", json={"id": "test_n2", "label": "Node 2", "type": "Entity", "description": "Desc 2"})
 
     # 4. Add Edge
-    res = client.post("/api/edges", json={"id": "test_e1", "source": "test_n1", "target": "test_n2", "relation": "connected_to"})
+    res = client.post("/api/edges", json={"id": "test_e1", "source": "test_n1", "target": "test_n2", "relation": "connected_to", "description": "Connection desc"})
     assert res.status_code == 200
 
     # 5. Get Graph
@@ -29,7 +29,9 @@ def test_graph_endpoints():
     data = res.json()
     assert len(data["nodes"]) == 2
     assert len(data["links"]) == 1
+    assert data["nodes"][0]["description"] == "Desc 1"
     assert data["links"][0]["source"] == "test_n1"
+    assert data["links"][0]["description"] == "Connection desc"
 
     # 6. Delete Node (cascade)
     res = client.delete("/api/nodes/test_n1")
