@@ -3,6 +3,8 @@ import { ref, nextTick } from 'vue'
 import axios from 'axios'
 import { Position } from '@element-plus/icons-vue'
 
+const emit = defineEmits(['reply'])
+
 const messages = ref<{role: string, content: string}[]>([
   { role: 'assistant', content: '您好！我是 DeepSeek 知识库助手。您可以向我提问，我会结合图谱和文档内容为您解答。' }
 ])
@@ -25,6 +27,8 @@ const sendMessage = async () => {
   messages.value.push({ role: 'user', content: userMsg })
   inputMessage.value = ''
   isLoading.value = true
+  // clear highlight from graph while loading new query
+  emit('reply', [])
   scrollToBottom()
 
   try {
