@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import ForceGraph3D from '3d-force-graph'
 import * as THREE from 'three'
+import SpriteText from 'three-spritetext'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, InfoFilled } from '@element-plus/icons-vue'
@@ -91,6 +92,15 @@ const updateNeighbors = (node: any) => {
 // Auto-rotation state
 const idleTimeout = ref<number | null>(null)
 const isIdle = ref(false)
+const isMouseOverGraph = ref(false)
+
+const handleMouseEnter = () => { isMouseOverGraph.value = true; resetIdleTimer() }
+const handleMouseLeave = () => { isMouseOverGraph.value = false; resetIdleTimer() }
+const handleMouseMove = () => { isMouseOverGraph.value = true; resetIdleTimer() }
+
+
+
+
 let rotationAngle = 0
 let animationFrameId: number | null = null
 const STANDARD_DISTANCE = 300
@@ -162,6 +172,23 @@ const animateRotation = () => {
 
     // 2. Node Breathing Effect
     const sceneNodes = Graph.scene().children.filter((c: any) => c.__data && c.__data.id)
+
+    // 3. Label Fade-in/Fade-out based on hover
+    const targetOpacity = (isMouseOverGraph.value && !isIdle.value) ? 1.0 : 0.0
+    Graph.scene().traverse((object: any) => {
+      if (object.userData && object.userData.isNodeLabel && object.material) {
+        const currentOpacity = object.material.opacity
+        const diff = targetOpacity - currentOpacity
+        if (Math.abs(diff) > 0.01) {
+          object.material.opacity += diff * 0.1 // Smooth fade
+          object.material.needsUpdate = true
+        } else {
+          object.material.opacity = targetOpacity
+          object.material.needsUpdate = true
+        }
+      }
+    })
+
     if (highlightedNodes.value.length > 0) {
       const time = Date.now() / 300 // breathing speed
       const emissiveIntensity = (Math.sin(time) + 1) / 2 // bounds 0.0 to 1.0
@@ -209,35 +236,27 @@ const initGraph = () => {
     .height(graphContainer.value.clientHeight)
     .graphData({ nodes: nodes.value, links: links.value })
     .nodeLabel('label')
+    .nodeThreeObjectExtend(true)
     .nodeThreeObject((node: any) => {
-      // Base size calculation derived from weight (number of edges)
-      const baseSize = 4
-      const weightBonus = Math.min((node.val || 0) * 1.5, 12) // Cap maximum size
-      const size = baseSize + weightBonus
-
-      const color = getNodeColor(node.type)
-      const t = (node.type || '').toLowerCase()
-
-      let geometry
-      if (t.includes('申报条件') || t.includes('requirement')) {
-        // Box for conditions
-        geometry = new THREE.BoxGeometry(size, size, size)
-      } else if (t.includes('组织') || t.includes('organization')) {
-        // Cylinder for organizations
-        geometry = new THREE.CylinderGeometry(size/1.5, size/1.5, size*1.5, 16)
-      } else {
-        // Default sphere
-        geometry = new THREE.SphereGeometry(size, 16, 16)
+      if (node.val >= 3) {
+        const sprite = new SpriteText(node.label)
+        sprite.color = '#ffffff'
+        sprite.textHeight = 6
+        sprite.position.set(0, 10, 0)
+        sprite.material.transparent = true
+        sprite.material.depthTest = false
+        sprite.material.opacity = 0
+        sprite.userData = { isNodeLabel: true }
+        return sprite
       }
-
-      const material = new THREE.MeshLambertMaterial({
-        color: color,
-        transparent: true,
-        opacity: 0.85
-      })
-      const mesh = new THREE.Mesh(geometry, material)
-      return mesh
+      return null
     })
+    .nodeVal((node: any) => {
+      const baseSize = 4
+      const weightBonus = Math.min((node.val || 0) * 1.5, 12)
+      return baseSize + weightBonus
+    })
+    .nodeColor((node: any) => getNodeColor(node.type))
     .linkDirectionalArrowLength(4)
     .linkDirectionalArrowRelPos(1)
     .linkDirectionalParticles(2)
@@ -377,7 +396,7 @@ defineExpose({ fetchGraphData, highlightNodes })
 </script>
 
 <template>
-  <div class="graph-wrapper">
+  <div class="graph-wrapper" @mouseenter="handleMouseEnter" @mouseleave="handleMouseLeave" @mousemove="handleMouseMove">
     <div ref="graphContainer" class="graph-canvas"></div>
 
     <!-- <div class="toolbar">
