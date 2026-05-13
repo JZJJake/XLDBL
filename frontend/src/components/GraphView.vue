@@ -93,6 +93,13 @@ const idleTimeout = ref<number | null>(null)
 const isIdle = ref(false)
 let rotationAngle = 0
 let animationFrameId: number | null = null
+const STANDARD_DISTANCE = 300
+const highlightedNodes = ref<string[]>([])
+
+const highlightNodes = (nodeIds: string[]) => {
+  highlightedNodes.value = nodeIds
+  resetIdleTimer()
+}
 
 const resetIdleTimer = () => {
   isIdle.value = false
@@ -100,21 +107,83 @@ const resetIdleTimer = () => {
 
   idleTimeout.value = window.setTimeout(() => {
     isIdle.value = true
-  }, 5000)
+    highlightedNodes.value = [] // clear breathing effect when idle starts
+
+    // Smoothly start rotation from the camera's CURRENT relative angle to the target
+    if (Graph) {
+      const controls = Graph.controls()
+      const cameraPos = Graph.cameraPosition()
+      const target = controls.target || {x:0, y:0, z:0}
+
+      const relX = cameraPos.x - target.x
+      const relZ = cameraPos.z - target.z
+      rotationAngle = Math.atan2(relX, relZ || 1)
+    }
+  }, 15000)
 }
 
 const animateRotation = () => {
-  if (Graph && isIdle.value) {
-    const cameraPos = Graph.cameraPosition()
-    const distance = Math.hypot(cameraPos.x || 0, cameraPos.z || 0) || 200
-    // Center the camera on the graph center
-    Graph.cameraPosition({
-      x: distance * Math.sin(rotationAngle),
-      y: cameraPos.y || 0,
-      z: distance * Math.cos(rotationAngle)
-    }, { x: 0, y: 0, z: 0 }, 0)
+  if (Graph) {
+    // 1. Idle Rotation & Zoom
+    if (isIdle.value) {
+      const controls = Graph.controls()
+      const cameraPos = Graph.cameraPosition()
+      const target = controls.target || {x:0, y:0, z:0}
 
-    rotationAngle += Math.PI / 1000 // Slow rotation
+      // Calculate current relative distance from target
+      const relX = cameraPos.x - target.x
+      const relZ = cameraPos.z - target.z
+      const currentDistance = Math.hypot(relX, relZ) || STANDARD_DISTANCE
+
+      // Smoothly interpolate towards standard distance
+      const distanceDiff = STANDARD_DISTANCE - currentDistance
+      const newDistance = Math.abs(distanceDiff) > 1 ? currentDistance + (distanceDiff * 0.02) : STANDARD_DISTANCE
+
+      // Interpolate Y position towards 0
+      const currentY = cameraPos.y || 0
+      const newY = Math.abs(currentY) > 1 ? currentY - (currentY * 0.02) : 0
+
+      // Interpolate the lookAt target slowly back to center (0,0,0)
+      const targetX = Math.abs(target.x) > 0.5 ? target.x - (target.x * 0.02) : 0
+      const targetY = Math.abs(target.y) > 0.5 ? target.y - (target.y * 0.02) : 0
+      const targetZ = Math.abs(target.z) > 0.5 ? target.z - (target.z * 0.02) : 0
+      const newTarget = { x: targetX, y: targetY, z: targetZ }
+
+      Graph.cameraPosition({
+        x: newTarget.x + newDistance * Math.sin(rotationAngle),
+        y: newY,
+        z: newTarget.z + newDistance * Math.cos(rotationAngle)
+      }, newTarget, 0)
+
+      rotationAngle += Math.PI / 1000 // Slow rotation
+    }
+
+    // 2. Node Breathing Effect
+    const sceneNodes = Graph.scene().children.filter((c: any) => c.__data && c.__data.id)
+    if (highlightedNodes.value.length > 0) {
+      const time = Date.now() / 300 // breathing speed
+      const emissiveIntensity = (Math.sin(time) + 1) / 2 // bounds 0.0 to 1.0
+
+      sceneNodes.forEach((mesh: any) => {
+        const nodeId = mesh.__data.id
+        if (highlightedNodes.value.includes(nodeId) && mesh.material) {
+          if (!mesh.userData.originalColor) {
+            mesh.userData.originalColor = mesh.material.color.clone()
+            mesh.material.emissive = new THREE.Color(0x4ade80)
+          }
+          mesh.material.emissiveIntensity = emissiveIntensity
+        } else if (mesh.material && mesh.userData.originalColor) {
+          mesh.material.emissiveIntensity = 0
+        }
+      })
+    } else {
+      // Clear if not highlighted
+      sceneNodes.forEach((mesh: any) => {
+        if (mesh.material && mesh.userData.originalColor) {
+          mesh.material.emissiveIntensity = 0
+        }
+      })
+    }
   }
   animationFrameId = requestAnimationFrame(animateRotation)
 }
@@ -134,6 +203,8 @@ const initGraph = () => {
   if (!graphContainer.value) return
 
   Graph = (ForceGraph3D as any)()(graphContainer.value)
+    .width(graphContainer.value.clientWidth)
+    .height(graphContainer.value.clientHeight)
     .graphData({ nodes: nodes.value, links: links.value })
     .nodeLabel('label')
     .nodeThreeObject((node: any) => {
@@ -290,7 +361,7 @@ const handleDeleteEdge = async () => {
   }
 }
 
-defineExpose({ fetchGraphData })
+defineExpose({ fetchGraphData, highlightNodes })
 </script>
 
 <template>
