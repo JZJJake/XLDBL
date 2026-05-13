@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app, init_sqlite, sqlite_conn
+from main import app, init_sqlite, sqlite_conn, chroma_collection
 
 client = TestClient(app)
 
@@ -47,3 +47,41 @@ def test_export():
     res = client.get("/api/export")
     assert res.status_code == 200
     assert res.headers["content-type"] == "application/json"
+
+def test_get_documents():
+    # Clear existing documents
+    data = chroma_collection.get()
+    if data['ids']:
+        chroma_collection.delete(ids=data['ids'])
+
+    # Add mock documents
+    chroma_collection.add(
+        ids=["chunk1", "chunk2", "chunk3"],
+        documents=[
+            "This is chunk 1 content that is a bit long so we can test the preview.",
+            "This is chunk 2 content.\nIt has a newline.",
+            "Chunk 3 has no known source."
+        ],
+        metadatas=[{"source": "doc1.txt"}, {"source": "doc1.txt"}, {"source": "未知来源"}]
+    )
+
+    res = client.get("/api/documents")
+    assert res.status_code == 200
+
+    resp_data = res.json()
+    assert len(resp_data) == 2
+
+    doc1 = next((item for item in resp_data if item["id"] == "doc1.txt"), None)
+    assert doc1 is not None
+    assert doc1["label"] == "doc1.txt"
+    assert len(doc1["children"]) == 2
+    assert doc1["children"][0]["id"] == "chunk1"
+    assert "片段 1:" in doc1["children"][0]["label"]
+    assert "This is chunk 1 content that is a bit long so we c..." in doc1["children"][0]["label"]
+    assert doc1["children"][0]["content"] == "This is chunk 1 content that is a bit long so we can test the preview."
+
+    doc2 = next((item for item in resp_data if item["id"] == "未知来源"), None)
+    assert doc2 is not None
+    assert doc2["label"] == "未知来源"
+    assert len(doc2["children"]) == 1
+    assert doc2["children"][0]["id"] == "chunk3"
