@@ -101,7 +101,9 @@ const highlightNodes = (nodeIds: string[]) => {
   resetIdleTimer()
 }
 
-const resetIdleTimer = () => {
+const resetIdleTimer = (e?: Event) => {
+  if (e && e.type === 'mousemove') return; // Ignore passive mousemove to avoid interrupting rotation
+
   isIdle.value = false
   if (idleTimeout.value) clearTimeout(idleTimeout.value)
 
@@ -210,7 +212,7 @@ const initGraph = () => {
     .nodeThreeObject((node: any) => {
       // Base size calculation derived from weight (number of edges)
       const baseSize = 4
-      const weightBonus = (node.val || 0) * 1.5
+      const weightBonus = Math.min((node.val || 0) * 1.5, 12) // Cap maximum size
       const size = baseSize + weightBonus
 
       const color = getNodeColor(node.type)
@@ -283,15 +285,25 @@ onMounted(() => {
   initGraph()
   fetchGraphData()
 
-  window.addEventListener('resize', () => {
+  const resizeObserver = new ResizeObserver(() => {
     if (Graph && graphContainer.value) {
       Graph.width(graphContainer.value.clientWidth)
       Graph.height(graphContainer.value.clientHeight)
     }
   })
+
+  if (graphContainer.value) {
+    resizeObserver.observe(graphContainer.value)
+  }
+
+  // Store the observer to disconnect later if needed, though unmount clears dom
+  (window as any).__graphResizeObserver = resizeObserver
 })
 
 onBeforeUnmount(() => {
+  if ((window as any).__graphResizeObserver) {
+    (window as any).__graphResizeObserver.disconnect()
+  }
   window.removeEventListener('mousemove', resetIdleTimer)
   window.removeEventListener('keydown', resetIdleTimer)
   window.removeEventListener('mousedown', resetIdleTimer)

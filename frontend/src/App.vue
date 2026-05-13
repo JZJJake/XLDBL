@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import GraphView from './components/GraphView.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import DocumentExplorer from './components/DocumentExplorer.vue'
-import { Download } from '@element-plus/icons-vue'
+import { Download, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 import axios from 'axios'
-import { onMounted } from 'vue'
 
 const graphViewRef = ref()
 const docExplorerRef = ref()
 
 const graphStats = ref<any>(null)
+const leftPanelOpen = ref(true)
+const rightPanelOpen = ref(true)
+
+const toggleLeftPanel = () => leftPanelOpen.value = !leftPanelOpen.value
+const toggleRightPanel = () => rightPanelOpen.value = !rightPanelOpen.value
 
 const fetchStats = async () => {
   try {
@@ -59,26 +63,31 @@ const handleExport = () => {
 
     <div class="main-layout">
       <!-- 左侧：文件管理与上传 -->
-      <div class="panel left-panel">
-        <div class="panel-title">
-          数据管理库
+      <div class="panel-wrapper left-wrapper" :class="{ 'is-collapsed': !leftPanelOpen }">
+        <div class="panel left-panel">
+          <div class="panel-title">
+            数据管理库
+          </div>
+          <div class="stats-panel" v-if="graphStats">
+            <div class="stat-item">
+              <span class="stat-value">{{ graphStats.node_count || 0 }}</span>
+              <span class="stat-label">节点量</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ graphStats.edge_count || 0 }}</span>
+              <span class="stat-label">神经连接量</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ graphStats.chunk_count || 0 }}</span>
+              <span class="stat-label">信息条数</span>
+            </div>
+          </div>
+          <UploadPanel @success="handleUploadSuccess" />
+          <DocumentExplorer ref="docExplorerRef" />
         </div>
-        <div class="stats-panel" v-if="graphStats">
-          <div class="stat-item">
-            <span class="stat-value">{{ graphStats.node_count || 0 }}</span>
-            <span class="stat-label">节点量</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-value">{{ graphStats.edge_count || 0 }}</span>
-            <span class="stat-label">神经连接量</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-value">{{ graphStats.chunk_count || 0 }}</span>
-            <span class="stat-label">信息条数</span>
-          </div>
+        <div class="toggle-btn left-toggle sidebar-toggle-left" @click="toggleLeftPanel">
+          <el-icon><ArrowLeft v-if="leftPanelOpen" /><ArrowRight v-else /></el-icon>
         </div>
-        <UploadPanel @success="handleUploadSuccess" />
-        <DocumentExplorer ref="docExplorerRef" />
       </div>
 
       <!-- 中间：3D 知识图谱 -->
@@ -87,8 +96,13 @@ const handleExport = () => {
       </div>
 
       <!-- 右侧：AI 交流区 -->
-      <div class="panel right-panel">
-        <ChatPanel />
+      <div class="panel-wrapper right-wrapper" :class="{ 'is-collapsed': !rightPanelOpen }">
+        <div class="toggle-btn right-toggle sidebar-toggle-right" @click="toggleRightPanel">
+          <el-icon><ArrowRight v-if="rightPanelOpen" /><ArrowLeft v-else /></el-icon>
+        </div>
+        <div class="panel right-panel">
+          <ChatPanel />
+        </div>
       </div>
     </div>
   </div>
@@ -138,13 +152,40 @@ body {
   display: flex;
   overflow: hidden;
 }
+.panel-wrapper {
+  position: relative;
+  display: flex;
+  height: 100%;
+  transition: transform 0.3s ease;
+  z-index: 10;
+}
+
+.left-wrapper {
+  transform: translateX(0);
+}
+.left-wrapper.is-collapsed {
+  transform: translateX(-100%);
+  margin-right: -300px;
+}
+
+.right-wrapper {
+  transform: translateX(0);
+}
+.right-wrapper.is-collapsed {
+  transform: translateX(100%);
+  margin-left: -350px;
+}
+
 .panel {
   background-color: #121826;
   display: flex;
   flex-direction: column;
   padding: 15px;
   color: #e0e0e0;
+  height: 100%;
+  box-sizing: border-box;
 }
+
 .left-panel {
   width: 300px;
   border-right: 1px solid #1f2937;
@@ -152,6 +193,37 @@ body {
 .right-panel {
   width: 350px;
   border-left: 1px solid #1f2937;
+}
+
+.toggle-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 60px;
+  background-color: #1f2937;
+  color: #e0e0e0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: 1px solid #374151;
+  z-index: 20;
+}
+.toggle-btn:hover {
+  background-color: #374151;
+  color: #4ade80;
+}
+
+.left-toggle {
+  right: -20px;
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+}
+.right-toggle {
+  left: -20px;
+  border-radius: 8px 0 0 8px;
+  border-right: none;
 }
 .panel-title {
   font-size: 16px;
