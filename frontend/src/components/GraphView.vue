@@ -12,13 +12,6 @@ let Graph: any = null
 const nodes = ref<any[]>([])
 const links = ref<any[]>([])
 
-// Dialogs state
-const nodeDialogVisible = ref(false)
-const edgeDialogVisible = ref(false)
-
-const nodeForm = ref({ id: '', label: '', type: 'Entity', description: '' })
-const edgeForm = ref({ id: '', source: '', target: '', relation: '', description: '' })
-
 // Selection state for Info Panel
 const selectedNode = ref<any>(null)
 const selectedEdge = ref<any>(null)
@@ -314,22 +307,6 @@ onBeforeUnmount(() => {
   if (Graph) Graph._destructor()
 })
 
-// const openAddNode = () => {
-//   nodeForm.value = { id: 'node_' + Date.now(), label: '', type: 'Entity', description: '' }
-//   nodeDialogVisible.value = true
-// }
-
-const submitNode = async () => {
-  try {
-    await axios.post('/api/nodes', nodeForm.value)
-    ElMessage.success('节点添加成功')
-    nodeDialogVisible.value = false
-    fetchGraphData()
-  } catch (error) {
-    ElMessage.error('添加节点失败')
-  }
-}
-
 const handleDeleteNode = async () => {
   if (!selectedNode.value) return
   try {
@@ -340,22 +317,6 @@ const handleDeleteNode = async () => {
     fetchGraphData()
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('删除节点失败')
-  }
-}
-
-// const openAddEdge = () => {
-//   edgeForm.value = { id: 'edge_' + Date.now(), source: '', target: '', relation: '', description: '' }
-//   edgeDialogVisible.value = true
-// }
-
-const submitEdge = async () => {
-  try {
-    await axios.post('/api/edges', edgeForm.value)
-    ElMessage.success('关联添加成功')
-    edgeDialogVisible.value = false
-    fetchGraphData()
-  } catch (error) {
-    ElMessage.error('添加关联失败')
   }
 }
 
@@ -379,11 +340,6 @@ defineExpose({ fetchGraphData, highlightNodes })
 <template>
   <div class="graph-wrapper">
     <div ref="graphContainer" class="graph-canvas"></div>
-
-    <!-- <div class="toolbar">
-      <el-button type="primary" :icon="Plus" @click="openAddNode">新增知识点</el-button>
-      <el-button type="primary" :icon="Plus" @click="openAddEdge">新增逻辑边</el-button>
-    </div> -->
 
     <transition name="el-zoom-in-right">
       <div v-if="selectedNode || selectedEdge" class="info-panel">
@@ -444,45 +400,6 @@ defineExpose({ fetchGraphData, highlightNodes })
       </div>
     </transition>
 
-    <el-dialog v-model="nodeDialogVisible" title="新增知识节点" width="500px">
-      <el-form :model="nodeForm" label-width="90px">
-        <el-form-item label="标识ID"><el-input v-model="nodeForm.id" placeholder="唯一英文字母或数字组合" /></el-form-item>
-        <el-form-item label="知识点名称"><el-input v-model="nodeForm.label" /></el-form-item>
-        <el-form-item label="分类"><el-input v-model="nodeForm.type" placeholder="如：概念、人物、技术、组织" /></el-form-item>
-        <el-form-item label="描述">
-          <el-input type="textarea" :rows="4" v-model="nodeForm.description" placeholder="在此输入有关该知识点的详细上下文内容..." />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="nodeDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitNode">保存节点</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="edgeDialogVisible" title="新增逻辑关联边" width="500px">
-      <el-form :model="edgeForm" label-width="90px">
-        <el-form-item label="标识ID"><el-input v-model="edgeForm.id" /></el-form-item>
-        <el-form-item label="源节点">
-          <el-select filterable v-model="edgeForm.source" placeholder="请选择来源节点" style="width: 100%">
-            <el-option v-for="n in nodes" :key="n.id" :label="n.label" :value="n.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="目标节点">
-          <el-select filterable v-model="edgeForm.target" placeholder="请选择目标节点" style="width: 100%">
-            <el-option v-for="n in nodes" :key="n.id" :label="n.label" :value="n.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="关系定义"><el-input v-model="edgeForm.relation" placeholder="如：包含、发明了、属于" /></el-form-item>
-        <el-form-item label="逻辑说明">
-          <el-input type="textarea" :rows="4" v-model="edgeForm.description" placeholder="解释这两者产生这种逻辑关系的原因或背景..." />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="edgeDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitEdge">保存关联</el-button>
-      </template>
-    </el-dialog>
-
   </div>
 </template>
 
@@ -494,13 +411,6 @@ defineExpose({ fetchGraphData, highlightNodes })
   background-color: #111;
 }
 .graph-canvas { width: 100%; height: 100%; }
-
-.toolbar {
-  position: absolute;
-  top: 20px; right: 20px;
-  display: flex; gap: 10px;
-  z-index: 10;
-}
 
 .info-panel {
   position: absolute;
