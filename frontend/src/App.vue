@@ -156,24 +156,29 @@ body {
   position: relative;
   display: flex;
   height: 100%;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s ease, margin 0.3s ease;
   z-index: 10;
+  flex-shrink: 0;
 }
 
 .left-wrapper {
   transform: translateX(0);
+  margin-right: 0;
+  width: 380px;
 }
 .left-wrapper.is-collapsed {
   transform: translateX(-100%);
-  margin-right: -300px;
+  margin-right: -380px;
 }
 
 .right-wrapper {
   transform: translateX(0);
+  margin-left: 0;
+  width: 400px;
 }
 .right-wrapper.is-collapsed {
   transform: translateX(100%);
-  margin-left: -350px;
+  margin-left: -400px;
 }
 
 .panel {
@@ -183,15 +188,15 @@ body {
   padding: 15px;
   color: #e0e0e0;
   height: 100%;
+  width: 100%;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .left-panel {
-  width: 300px;
   border-right: 1px solid #1f2937;
 }
 .right-panel {
-  width: 350px;
   border-left: 1px solid #1f2937;
 }
 
@@ -232,6 +237,9 @@ body {
   margin-bottom: 10px;
   border-bottom: 2px solid #67C23A;
   padding-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Stats styling */

@@ -2,3 +2,12 @@
 __pycache__
 *.db
 *.sqlite3
+node_modules/
+node_modules/
+backend.log
+frontend.log
+*.sqlite3
+*.db
+*.png
+test_script.js
+test_script2.js
