@@ -121,6 +121,77 @@ def extract_kg_from_text(text: str):
         return {"nodes": [], "edges": []}
 
 
+
+def process_and_store_vectors(text: str, filename: str) -> int:
+    chunks = chunk_text(text)
+    chunk_ids = [str(uuid.uuid4()) for _ in chunks]
+    embeddings = embedding_model.encode(chunks).tolist()
+
+    metadata = [{"source": filename} for _ in chunks]
+
+    chroma_collection.add(
+        ids=chunk_ids,
+        embeddings=embeddings,
+        documents=chunks,
+        metadatas=metadata
+    )
+    return len(chunks)
+
+def store_kg_in_sqlite(kg_data: dict) -> tuple[int, int]:
+    cursor = get_db_cursor()
+    nodes_added = 0
+    edges_added = 0
+
+    id_map = {}
+
+    for node in kg_data.get("nodes", []):
+        try:
+            label = node["label"].strip()
+            cursor.execute("SELECT id, description FROM nodes WHERE label = ? COLLATE NOCASE", (label,))
+            existing = cursor.fetchone()
+
+            if existing:
+                existing_id = existing[0]
+                existing_desc = existing[1] or ""
+                new_desc = node.get("description", "")
+
+                if new_desc and new_desc not in existing_desc:
+                    merged_desc = existing_desc + "\n" + new_desc if existing_desc else new_desc
+                    cursor.execute("UPDATE nodes SET description = ? WHERE id = ?", (merged_desc, existing_id))
+
+                id_map[node["id"]] = existing_id
+            else:
+                new_id = node["id"]
+                id_map[new_id] = new_id
+                cursor.execute("INSERT INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
+                               (new_id, label, node.get("type", "Entity"), node.get("description", "")))
+                nodes_added += 1
+        except Exception as e:
+            print(f"Error processing node: {e}")
+
+    for edge in kg_data.get("edges", []):
+        try:
+            source_id = id_map.get(edge["source"], edge["source"])
+            target_id = id_map.get(edge["target"], edge["target"])
+
+            if source_id == target_id:
+                continue
+
+            cursor.execute("SELECT id FROM edges WHERE source = ? AND target = ? AND relation = ? COLLATE NOCASE",
+                           (source_id, target_id, edge["relation"]))
+            existing_edge = cursor.fetchone()
+
+            if not existing_edge:
+                cursor.execute("INSERT INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
+                               (edge["id"], source_id, target_id, edge["relation"], edge.get("description", "")))
+                edges_added += 1
+        except Exception as e:
+             print(f"Error processing edge: {e}")
+
+    sqlite_conn.commit()
+    return nodes_added, edges_added
+
+
 # --- APIS ---
 
 @app.post("/api/upload")
@@ -131,88 +202,21 @@ async def upload_file(file: UploadFile = File(...)):
     content = await file.read()
     text = content.decode('utf-8', errors='ignore')
 
-    # 1. Chunk Text & Calculate Embeddings
-    chunks = chunk_text(text)
-    chunk_ids = [str(uuid.uuid4()) for _ in chunks]
-    embeddings = embedding_model.encode(chunks).tolist()
-
-    metadata = [{"source": file.filename} for _ in chunks]
-
-    # Store in ChromaDB
-    chroma_collection.add(
-        ids=chunk_ids,
-        embeddings=embeddings,
-        documents=chunks,
-        metadatas=metadata
-    )
+    # 1. Chunk Text & Calculate Embeddings and store in ChromaDB
+    chunks_count = process_and_store_vectors(text, file.filename)
 
     # 2. Extract Deep KG using DeepSeek
     kg_data = extract_kg_from_text(text)
 
     # 3. Deduplicate and Store KG in SQLite
-    cursor = get_db_cursor()
-    nodes_added = 0
-    edges_added = 0
+    nodes_added, edges_added = store_kg_in_sqlite(kg_data)
 
-    # ID Mapping for deduplication (Old ID -> New/Existing ID)
-    id_map = {}
-
-    for node in kg_data.get("nodes", []):
-        try:
-            label = node["label"].strip()
-            # Check if a node with this exact label already exists
-            cursor.execute("SELECT id, description FROM nodes WHERE label = ? COLLATE NOCASE", (label,))
-            existing = cursor.fetchone()
-
-            if existing:
-                # Merge logic: keep existing ID, append description if it's new and useful
-                existing_id = existing[0]
-                existing_desc = existing[1] or ""
-                new_desc = node.get("description", "")
-
-                # If new description has info not in existing, we append it
-                if new_desc and new_desc not in existing_desc:
-                    merged_desc = existing_desc + "\n" + new_desc if existing_desc else new_desc
-                    cursor.execute("UPDATE nodes SET description = ? WHERE id = ?", (merged_desc, existing_id))
-
-                id_map[node["id"]] = existing_id
-            else:
-                # Truly new node
-                new_id = node["id"]
-                id_map[new_id] = new_id
-                cursor.execute("INSERT INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
-                               (new_id, label, node.get("type", "Entity"), node.get("description", "")))
-                nodes_added += 1
-
-        except Exception as e:
-            print(f"Error processing node: {e}")
-
-    for edge in kg_data.get("edges", []):
-        try:
-            # Remap source and target IDs to merged ones
-            source_id = id_map.get(edge["source"], edge["source"])
-            target_id = id_map.get(edge["target"], edge["target"])
-
-            # Avoid self-loops
-            if source_id == target_id:
-                continue
-
-            # Check if this exact edge already exists between these two nodes
-            cursor.execute("SELECT id FROM edges WHERE source = ? AND target = ? AND relation = ? COLLATE NOCASE",
-                           (source_id, target_id, edge["relation"]))
-            existing_edge = cursor.fetchone()
-
-            if not existing_edge:
-                cursor.execute("INSERT INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
-                               (edge["id"], source_id, target_id, edge["relation"], edge.get("description", "")))
-                edges_added += 1
-
-        except Exception as e:
-             print(f"Error processing edge: {e}")
-
-    sqlite_conn.commit()
-
-    return {"message": "File processed successfully", "chunks": len(chunks), "nodes_added": nodes_added, "edges_added": edges_added}
+    return {
+        "message": "File processed successfully",
+        "chunks": chunks_count,
+        "nodes_added": nodes_added,
+        "edges_added": edges_added
+    }
 
 
 @app.get("/api/graph")
