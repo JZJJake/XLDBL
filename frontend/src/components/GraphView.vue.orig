@@ -4,7 +4,7 @@ import ForceGraph3D from '3d-force-graph'
 import * as THREE from 'three'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, InfoFilled } from '@element-plus/icons-vue'
+import { Delete, Plus, InfoFilled } from '@element-plus/icons-vue'
 
 const graphContainer = ref<HTMLElement | null>(null)
 let Graph: any = null
@@ -231,10 +231,10 @@ onBeforeUnmount(() => {
   if (Graph) Graph._destructor()
 })
 
-// const openAddNode = () => {
-//   nodeForm.value = { id: 'node_' + Date.now(), label: '', type: 'Entity', description: '' }
-//   nodeDialogVisible.value = true
-// }
+const openAddNode = () => {
+  nodeForm.value = { id: 'node_' + Date.now(), label: '', type: 'Entity', description: '' }
+  nodeDialogVisible.value = true
+}
 
 const submitNode = async () => {
   try {
@@ -260,10 +260,10 @@ const handleDeleteNode = async () => {
   }
 }
 
-// const openAddEdge = () => {
-//   edgeForm.value = { id: 'edge_' + Date.now(), source: '', target: '', relation: '', description: '' }
-//   edgeDialogVisible.value = true
-// }
+const openAddEdge = () => {
+  edgeForm.value = { id: 'edge_' + Date.now(), source: '', target: '', relation: '', description: '' }
+  edgeDialogVisible.value = true
+}
 
 const submitEdge = async () => {
   try {

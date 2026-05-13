@@ -69,3 +69,6 @@ INFO:     127.0.0.1:50610 - "GET /api/graph HTTP/1.1" 200 OK
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: http://192.168.0.2:5173/
+INFO:     127.0.0.1:42870 - "GET /api/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42880 - "GET /api/graph HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42888 - "GET /api/graph HTTP/1.1" 200 OK

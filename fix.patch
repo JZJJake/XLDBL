@@ -1,0 +1,42 @@
+--- frontend/src/components/GraphView.vue
++++ frontend/src/components/GraphView.vue
+@@ -3,7 +3,7 @@
+ import ForceGraph3D from '3d-force-graph'
+ import * as THREE from 'three'
+ import axios from 'axios'
+ import { ElMessage, ElMessageBox } from 'element-plus'
+-import { Delete, Plus, InfoFilled } from '@element-plus/icons-vue'
++import { Delete, InfoFilled } from '@element-plus/icons-vue'
+
+ const graphContainer = ref<HTMLElement | null>(null)
+ let Graph: any = null
+@@ -231,10 +231,10 @@
+   if (Graph) Graph._destructor()
+ })
+
+-const openAddNode = () => {
+-  nodeForm.value = { id: 'node_' + Date.now(), label: '', type: 'Entity', description: '' }
+-  nodeDialogVisible.value = true
+-}
++// const openAddNode = () => {
++//   nodeForm.value = { id: 'node_' + Date.now(), label: '', type: 'Entity', description: '' }
++//   nodeDialogVisible.value = true
++// }
+
+ const submitNode = async () => {
+   try {
+@@ -260,10 +260,10 @@
+   }
+ }
+
+-const openAddEdge = () => {
+-  edgeForm.value = { id: 'edge_' + Date.now(), source: '', target: '', relation: '', description: '' }
+-  edgeDialogVisible.value = true
+-}
++// const openAddEdge = () => {
++//   edgeForm.value = { id: 'edge_' + Date.now(), source: '', target: '', relation: '', description: '' }
++//   edgeDialogVisible.value = true
++// }
+
+ const submitEdge = async () => {
+   try {
