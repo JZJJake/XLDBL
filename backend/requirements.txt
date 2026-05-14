@@ -11,7 +11,7 @@ pdfplumber
 pytesseract
 python-docx
 openpyxl
-aspose-words
+aspose-words; python_version < "3.14"
 beautifulsoup4
 html2text
 requests

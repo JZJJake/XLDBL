@@ -7,7 +7,11 @@ import pytesseract
 from PIL import Image
 import docx
 import openpyxl
-import aspose.words as aw
+try:
+    import aspose.words as aw
+    HAS_ASPOSE = True
+except ImportError:
+    HAS_ASPOSE = False
 import uuid
 import json
 
@@ -77,12 +81,14 @@ def parse_docx(file_path: str) -> str:
         for para in doc.paragraphs:
             text += para.text + "\n"
     except Exception as e:
-        # Fallback to aspose words if it's an older .doc
-        try:
-            doc = aw.Document(file_path)
-            text = doc.to_string(aw.SaveFormat.TEXT)
-        except Exception as e2:
-            print(f"Error parsing DOC/DOCX {file_path}: {e2}")
+        if HAS_ASPOSE:
+            try:
+                doc = aw.Document(file_path)
+                text = doc.to_string(aw.SaveFormat.TEXT)
+            except Exception as e2:
+                print(f"Error parsing DOC/DOCX {file_path}: {e2}")
+        else:
+             print(f"Error parsing DOC/DOCX {file_path}: {e}. (aspose-words not available for fallback)")
     return text
 
 def parse_excel(file_path: str) -> str:
@@ -100,6 +106,9 @@ def parse_excel(file_path: str) -> str:
     return text
 
 def parse_wps(file_path: str) -> str:
+    if not HAS_ASPOSE:
+        print(f"Warning: Cannot parse WPS {file_path} because aspose-words is not installed on this python version.")
+        return "无法解析 WPS 文件，因为当前 Python 环境未安装 aspose-words 库。"
     text = ""
     try:
         doc = aw.Document(file_path)
