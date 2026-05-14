@@ -77,10 +77,6 @@ const handleExport = () => {
               <span class="stat-value">{{ graphStats.edge_count || 0 }}</span>
               <span class="stat-label">神经连接量</span>
             </div>
-            <div class="stat-item">
-              <span class="stat-value">{{ graphStats.chunk_count || 0 }}</span>
-              <span class="stat-label">信息条数</span>
-            </div>
           </div>
           <UploadPanel @success="handleUploadSuccess" />
           <DocumentExplorer ref="docExplorerRef" />

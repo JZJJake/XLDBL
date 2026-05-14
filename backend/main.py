@@ -7,14 +7,15 @@ from pydantic import BaseModel
 import uuid
 import json
 import sqlite3
+import shutil
+import tempfile
 from typing import List, Optional
 
-# Import our database and model setup
-from database import init_sqlite, init_chroma, init_embedding_model
+from database import init_sqlite, DB_DIR
+from document_parser import parse_file, parse_url
 
 app = FastAPI()
 
-# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,12 +24,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize systems
 sqlite_conn = init_sqlite()
-chroma_client, chroma_collection = init_chroma()
-embedding_model = init_embedding_model()
+RAW_DIR = os.path.join(DB_DIR, "raw")
+WIKI_DIR = os.path.join(DB_DIR, "wiki")
+ROUTING_FILE = os.path.join(WIKI_DIR, "ROUTING.md")
 
-# Setup OpenAI for DeepSeek
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -36,13 +36,8 @@ load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 
-if DEEPSEEK_API_KEY:
-    openai_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-else:
-    openai_client = None
+openai_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL) if DEEPSEEK_API_KEY else None
 
-
-# --- MODELS ---
 class NodeBase(BaseModel):
     id: str
     label: str
@@ -59,308 +54,303 @@ class EdgeBase(BaseModel):
 class ChatRequest(BaseModel):
     message: str
 
-
-# --- HELPER FUNCTIONS ---
 def get_db_cursor():
     return sqlite_conn.cursor()
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50):
-    if "$END$" in text:
-        # Split explicitly by user marker, removing empty chunks
-        raw_chunks = text.split("$END$")
-        return [c.strip() for c in raw_chunks if c.strip()]
+def get_routing_tree():
+    if os.path.exists(ROUTING_FILE):
+        with open(ROUTING_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    return "No routes established yet."
 
-    chunks = []
-    start = 0
-    while start < len(text):
-        chunks.append(text[start:start+chunk_size])
-        start += chunk_size - overlap
-    return chunks
+def save_raw_document(filename: str, text: str):
+    safe_name = "".join([c if c.isalnum() or c in ['_', '-', '.'] else "_" for c in filename])
+    if not safe_name.endswith('.md') and not safe_name.endswith('.txt'):
+        safe_name += '.md'
+    filepath = os.path.join(RAW_DIR, safe_name)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(text)
+    return safe_name
 
-def extract_kg_from_text(text: str):
+def ingest_document(source_name: str, text: str):
     if not openai_client:
-        print("DeepSeek API not configured, skipping KG extraction.")
-        return {"nodes": [], "edges": []}
+        return {"nodes": 0, "edges": 0}
 
     prompt = f"""
-    Deeply analyze the following text and construct a comprehensive Knowledge Graph.
-    Your goal is not just to extract entities, but to provide rich content analysis and detailed definitions.
+    You are an intelligent knowledge base ingestion agent following the LLM Wiki pattern.
+    I have just uploaded a new source named '{source_name}'.
 
-    Identify key entities (Nodes) and the logical relationships between them (Edges).
-    Respond strictly in JSON format with two keys: "nodes" and "edges".
+    Tasks to perform based on the entire text below:
+    1. EXTRACT KNOWLEDGE GRAPH: Extract key entities (nodes) and logical relationships (edges).
+       - Determine if any information in this text contradicts previously known general facts (flag `needs_review`: true if so).
+       - Output JSON with "nodes" and "edges" lists.
+       - Nodes: id, label, type, description, needs_review (bool).
+       - Edges: id, source, target, relation, description, needs_review (bool).
+    2. GENERATE WIKI: Generate a comprehensive markdown summary for this source.
+    3. ROUTING UPDATE: Propose an updated hierarchy for the ROUTING.md tree incorporating this new source.
 
-    For each Node, provide:
-      - "id": a unique string identifier.
-      - "label": the name of the entity.
-      - "type": category (e.g., Concept, Person, Technology, Organization). ALL TYPES MUST BE IN CHINESE (e.g., 概念, 人物, 技术, 组织, 申报条件).
-      - "description": A rich, detailed textual explanation of what this entity is, based on the text.
+    OUTPUT FORMAT:
+    You MUST output valid JSON ONLY, strictly following this structure:
+    {{
+       "graph": {{ "nodes": [...], "edges": [...] }},
+       "wiki_markdown": "# Title\\n\\nContent...",
+       "routing_markdown": "- Topic\\n  - [{source_name}](./{source_name}.md)"
+    }}
 
-    For each Edge, provide:
-      - "id": a unique string identifier.
-      - "source": the id of the source node.
-      - "target": the id of the target node.
-      - "relation": a short label for the relationship (e.g., "created_by", "depends_on"). THIS RELATION MUST BE IN CHINESE (e.g., 包含, 属于, 依赖于, 关联条件).
-      - "description": A detailed explanation clarifying how and why these two entities are connected in this context.
-
-    Text snippet to analyze:
-    {text[:2500]}
+    --- Text snippet (Start) ---
+    {text[:15000]} # Limit to 15k chars for safety, but large context handles more.
+    --- Text snippet (End) ---
     """
+
     try:
         response = openai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "You are a professional knowledge extraction analyst. Output ONLY valid JSON."},
+                {"role": "system", "content": "You are a professional knowledge base maintainer. OUTPUT ONLY JSON."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"}
         )
-        content = response.choices[0].message.content
-        return json.loads(content)
+        result = json.loads(response.choices[0].message.content)
+
+        # 1. Save Wiki
+        safe_name = "".join([c if c.isalnum() else "_" for c in source_name])
+        wiki_path = os.path.join(WIKI_DIR, f"{safe_name}.md")
+        with open(wiki_path, "w", encoding="utf-8") as f:
+            f.write(result.get("wiki_markdown", ""))
+
+        # 2. Update Routing
+        with open(ROUTING_FILE, "w", encoding="utf-8") as f:
+            f.write(result.get("routing_markdown", ""))
+
+        # 3. Save Graph
+        kg_data = result.get("graph", {"nodes": [], "edges": []})
+        cursor = get_db_cursor()
+        nodes_added = 0
+        edges_added = 0
+        id_map = {}
+
+        for node in kg_data.get("nodes", []):
+            try:
+                label = node["label"].strip()
+                cursor.execute("SELECT id, description, source_documents FROM nodes WHERE label = ? COLLATE NOCASE", (label,))
+                existing = cursor.fetchone()
+
+                if existing:
+                    existing_id = existing[0]
+                    existing_desc = existing[1] or ""
+                    existing_docs = existing[2] or ""
+                    new_desc = node.get("description", "")
+
+                    merged_docs = existing_docs
+                    if source_name not in existing_docs:
+                        merged_docs += f", {source_name}" if existing_docs else source_name
+
+                    if new_desc and new_desc not in existing_desc:
+                        merged_desc = existing_desc + "\\n" + new_desc if existing_desc else new_desc
+                        cursor.execute("UPDATE nodes SET description = ?, source_documents = ?, needs_review = ? WHERE id = ?",
+                                       (merged_desc, merged_docs, node.get("needs_review", False), existing_id))
+                    else:
+                        cursor.execute("UPDATE nodes SET source_documents = ?, needs_review = ? WHERE id = ?",
+                                       (merged_docs, node.get("needs_review", False), existing_id))
+                    id_map[node["id"]] = existing_id
+                else:
+                    new_id = node["id"]
+                    id_map[new_id] = new_id
+                    cursor.execute("INSERT INTO nodes (id, label, type, description, source_documents, needs_review) VALUES (?, ?, ?, ?, ?, ?)",
+                                   (new_id, label, node.get("type", "Entity"), node.get("description", ""), source_name, node.get("needs_review", False)))
+                    nodes_added += 1
+            except Exception as e:
+                print(f"Error processing node: {e}")
+
+        for edge in kg_data.get("edges", []):
+            try:
+                source_id = id_map.get(edge["source"], edge["source"])
+                target_id = id_map.get(edge["target"], edge["target"])
+                if source_id == target_id: continue
+
+                cursor.execute("SELECT id, source_documents FROM edges WHERE source = ? AND target = ? AND relation = ? COLLATE NOCASE",
+                               (source_id, target_id, edge["relation"]))
+                existing_edge = cursor.fetchone()
+
+                if existing_edge:
+                    existing_docs = existing_edge[1] or ""
+                    merged_docs = existing_docs
+                    if source_name not in existing_docs:
+                        merged_docs += f", {source_name}" if existing_docs else source_name
+                    cursor.execute("UPDATE edges SET source_documents = ?, needs_review = ? WHERE id = ?",
+                                   (merged_docs, edge.get("needs_review", False), existing_edge[0]))
+                else:
+                    cursor.execute("INSERT INTO edges (id, source, target, relation, description, source_documents, needs_review) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                   (edge.get("id", str(uuid.uuid4())), source_id, target_id, edge["relation"], edge.get("description", ""), source_name, edge.get("needs_review", False)))
+                    edges_added += 1
+            except Exception as e:
+                 print(f"Error processing edge: {e}")
+
+        sqlite_conn.commit()
+        return {"nodes": nodes_added, "edges": edges_added}
+
     except Exception as e:
-        print(f"Error calling DeepSeek API: {e}")
-        return {"nodes": [], "edges": []}
-
-
-# --- APIS ---
+        print(f"Ingestion error: {e}")
+        return {"nodes": 0, "edges": 0}
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    if not file.filename.endswith('.md'):
-        raise HTTPException(status_code=400, detail="Only Markdown (.md) files are supported")
+async def upload_file(
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None)
+):
+    if not file and not url:
+        raise HTTPException(status_code=400, detail="Must provide either a file or a URL")
 
-    content = await file.read()
-    text = content.decode('utf-8', errors='ignore')
+    text = ""
+    source_name = ""
 
-    # 1. Chunk Text & Calculate Embeddings
-    chunks = chunk_text(text)
-    chunk_ids = [str(uuid.uuid4()) for _ in chunks]
-    embeddings = embedding_model.encode(chunks).tolist()
-
-    metadata = [{"source": file.filename} for _ in chunks]
-
-    # Store in ChromaDB
-    chroma_collection.add(
-        ids=chunk_ids,
-        embeddings=embeddings,
-        documents=chunks,
-        metadatas=metadata
-    )
-
-    # 2. Extract Deep KG using DeepSeek
-    kg_data = extract_kg_from_text(text)
-
-    # 3. Deduplicate and Store KG in SQLite
-    cursor = get_db_cursor()
-    nodes_added = 0
-    edges_added = 0
-
-    # ID Mapping for deduplication (Old ID -> New/Existing ID)
-    id_map = {}
-
-    for node in kg_data.get("nodes", []):
+    if url:
+        text = parse_url(url)
+        source_name = url
+    else:
         try:
-            label = node["label"].strip()
-            # Check if a node with this exact label already exists
-            cursor.execute("SELECT id, description FROM nodes WHERE label = ? COLLATE NOCASE", (label,))
-            existing = cursor.fetchone()
+            suffix = os.path.splitext(file.filename)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                shutil.copyfileobj(file.file, tmp)
+                tmp_path = tmp.name
 
-            if existing:
-                # Merge logic: keep existing ID, append description if it's new and useful
-                existing_id = existing[0]
-                existing_desc = existing[1] or ""
-                new_desc = node.get("description", "")
+            text = parse_file(tmp_path, file.filename)
+            source_name = file.filename
+        finally:
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
-                # If new description has info not in existing, we append it
-                if new_desc and new_desc not in existing_desc:
-                    merged_desc = existing_desc + "\n" + new_desc if existing_desc else new_desc
-                    cursor.execute("UPDATE nodes SET description = ? WHERE id = ?", (merged_desc, existing_id))
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from the provided source")
 
-                id_map[node["id"]] = existing_id
-            else:
-                # Truly new node
-                new_id = node["id"]
-                id_map[new_id] = new_id
-                cursor.execute("INSERT INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
-                               (new_id, label, node.get("type", "Entity"), node.get("description", "")))
-                nodes_added += 1
+    # Save raw document
+    save_raw_document(source_name, text)
 
-        except Exception as e:
-            print(f"Error processing node: {e}")
+    # Ingest directly without chunking
+    stats = ingest_document(source_name, text)
 
-    for edge in kg_data.get("edges", []):
-        try:
-            # Remap source and target IDs to merged ones
-            source_id = id_map.get(edge["source"], edge["source"])
-            target_id = id_map.get(edge["target"], edge["target"])
-
-            # Avoid self-loops
-            if source_id == target_id:
-                continue
-
-            # Check if this exact edge already exists between these two nodes
-            cursor.execute("SELECT id FROM edges WHERE source = ? AND target = ? AND relation = ? COLLATE NOCASE",
-                           (source_id, target_id, edge["relation"]))
-            existing_edge = cursor.fetchone()
-
-            if not existing_edge:
-                cursor.execute("INSERT INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
-                               (edge["id"], source_id, target_id, edge["relation"], edge.get("description", "")))
-                edges_added += 1
-
-        except Exception as e:
-             print(f"Error processing edge: {e}")
-
-    sqlite_conn.commit()
-
-    return {"message": "File processed successfully", "chunks": len(chunks), "nodes_added": nodes_added, "edges_added": edges_added}
-
+    return {"message": "Source processed successfully", "nodes_added": stats["nodes"], "edges_added": stats["edges"]}
 
 @app.get("/api/graph")
 def get_graph():
     cursor = get_db_cursor()
-    cursor.execute("SELECT id, label, type, description FROM nodes")
-    nodes = [{"id": row[0], "label": row[1], "type": row[2], "description": row[3] or ""} for row in cursor.fetchall()]
+    cursor.execute("SELECT id, label, type, description, source_documents, needs_review FROM nodes")
+    nodes = [{"id": row[0], "label": row[1], "type": row[2], "description": row[3] or "", "source_documents": row[4] or "", "needs_review": bool(row[5])} for row in cursor.fetchall()]
 
-    cursor.execute("SELECT id, source, target, relation, description FROM edges")
-    edges = [{"id": row[0], "source": row[1], "target": row[2], "relation": row[3], "description": row[4] or ""} for row in cursor.fetchall()]
-
-    # Try getting chunk counts from chromadb
-    try:
-        chroma_data = chroma_collection.get()
-        chunk_count = len(chroma_data.get("ids", []))
-    except Exception:
-        chunk_count = 0
+    cursor.execute("SELECT id, source, target, relation, description, source_documents, needs_review FROM edges")
+    edges = [{"id": row[0], "source": row[1], "target": row[2], "relation": row[3], "description": row[4] or "", "source_documents": row[5] or "", "needs_review": bool(row[6])} for row in cursor.fetchall()]
 
     stats = {
         "node_count": len(nodes),
         "edge_count": len(edges),
-        "chunk_count": chunk_count
+        "chunk_count": 0  # Deprecated
     }
 
     return {"nodes": nodes, "links": edges, "stats": stats}
 
-# Node Maintenance
-@app.post("/api/nodes")
-def add_node(node: NodeBase):
-    cursor = get_db_cursor()
-    try:
-        cursor.execute("INSERT INTO nodes (id, label, type, description) VALUES (?, ?, ?, ?)",
-                       (node.id, node.label, node.type, node.description))
-        sqlite_conn.commit()
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.get("/api/documents")
+def get_documents():
+    docs = []
+    if os.path.exists(RAW_DIR):
+        for f in os.listdir(RAW_DIR):
+            filepath = os.path.join(RAW_DIR, f)
+            if os.path.isfile(filepath):
+                with open(filepath, "r", encoding="utf-8") as file:
+                    content = file.read(500) # Preview
+                docs.append({"id": f, "label": f, "content": content + "..."})
+    return docs
 
-@app.delete("/api/nodes/{node_id}")
-def delete_node(node_id: str):
-    cursor = get_db_cursor()
-    cursor.execute("DELETE FROM edges WHERE source = ? OR target = ?", (node_id, node_id))
-    cursor.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
-    sqlite_conn.commit()
-    return {"success": True}
+@app.get("/api/wiki")
+def list_wiki_pages():
+    if not os.path.exists(WIKI_DIR):
+        return {"pages": []}
+    files = [f for f in os.listdir(WIKI_DIR) if f.endswith(".md") and f != "ROUTING.md"]
+    return {"pages": files}
 
-# Edge Maintenance
-@app.post("/api/edges")
-def add_edge(edge: EdgeBase):
-    cursor = get_db_cursor()
-    try:
-        cursor.execute("INSERT INTO edges (id, source, target, relation, description) VALUES (?, ?, ?, ?, ?)",
-                       (edge.id, edge.source, edge.target, edge.relation, edge.description))
-        sqlite_conn.commit()
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.get("/api/wiki/{page_name}")
+def get_wiki_page(page_name: str):
+    safe_page_name = "".join([c for c in page_name if c.isalnum() or c in ['_', '-', '.']])
+    if safe_page_name != page_name or ".." in page_name or "/" in page_name or "\\\\" in page_name:
+        raise HTTPException(status_code=400, detail="Invalid page name")
 
-@app.delete("/api/edges/{edge_id}")
-def delete_edge(edge_id: str):
-    cursor = get_db_cursor()
-    cursor.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
-    sqlite_conn.commit()
-    return {"success": True}
+    page_path = os.path.join(WIKI_DIR, safe_page_name)
+    if not os.path.exists(page_path) or not os.path.isfile(page_path):
+        raise HTTPException(status_code=404, detail="Page not found")
+    with open(page_path, "r", encoding="utf-8") as f:
+        return {"content": f.read()}
 
-# Export for LLM Integration
-@app.get("/api/export")
-def export_database():
-    data = chroma_collection.get(include=["documents", "metadatas", "embeddings"])
-
-    export_data = {
-        "chunks": []
-    }
-
-    for i in range(len(data['ids'])):
-        chunk_obj = {
-            "id": data['ids'][i],
-            "content": data['documents'][i],
-            "source": data['metadatas'][i].get("source", ""),
-            "vector": data['embeddings'][i].tolist() if data.get('embeddings') is not None and hasattr(data['embeddings'][i], 'tolist') else data['embeddings'][i] if data.get('embeddings') is not None else []
-        }
-        export_data["chunks"].append(chunk_obj)
-
-    export_path = os.path.join(os.path.dirname(__file__), "data", "knowledge_base_export.json")
-    with open(export_path, "w", encoding="utf-8") as f:
-        json.dump(export_data, f, ensure_ascii=False, indent=2)
-
-    return FileResponse(export_path, filename="knowledge_base_export.json", media_type="application/json")
-
-
-# Advanced GraphRAG Chat endpoint
+# Two-Step Agentic Chat Endpoint
 @app.post("/api/chat")
-def chat_with_knowledge(req: ChatRequest):
+@app.post("/api/wiki/chat_manage")
+def agentic_chat(req: ChatRequest):
     if not openai_client:
-        return {"reply": "DeepSeek API key not configured. Cannot generate response."}
+        return {"reply": "DeepSeek API key not configured."}
 
-    # 1. Retrieve Raw Text Context from Vector Database
-    query_vector = embedding_model.encode([req.message]).tolist()
-    results = chroma_collection.query(
-        query_embeddings=query_vector,
-        n_results=3
-    )
-    context_docs = results['documents'][0] if results['documents'] else []
-    raw_context = "\n".join(context_docs)
+    routing_tree = get_routing_tree()
 
-    # 2. Retrieve Graph Context (Simple GraphRAG approximation: find nodes matching query terms)
-    # In a full-scale GraphRAG, we would vectorize the nodes too, but for speed we do keyword matching here.
+    # Step 1: Routing Decision
+    routing_prompt = f"""
+    You are an intelligent knowledge agent answering a user query.
+    Based on the user's question, determine if you need to fetch specific Wiki pages to answer it.
+    Review the following ROUTING index tree of available knowledge:
+
+    {routing_tree}
+
+    User Query: {req.message}
+
+    If you need specific wiki pages, output a JSON array of the filenames (e.g. ["topic1.md", "topic2.md"]).
+    If you don't need any or can answer generally, output an empty JSON array [].
+    OUTPUT ONLY THE JSON ARRAY.
+    """
+
+    try:
+        route_resp = openai_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": routing_prompt}],
+            temperature=0.1
+        )
+        try:
+            pages_to_fetch = json.loads(route_resp.choices[0].message.content.strip("` \n"))
+        except:
+            pages_to_fetch = []
+    except Exception as e:
+        print(f"Routing error: {e}")
+        pages_to_fetch = []
+
+    # Step 2: Fetch context
+    wiki_context = ""
+    for page in pages_to_fetch:
+        page_path = os.path.join(WIKI_DIR, page)
+        if os.path.exists(page_path):
+            with open(page_path, "r", encoding="utf-8") as f:
+                wiki_context += f"\n--- Wiki Page: {page} ---\n{f.read()}"
+
+    # Also fetch minimal graph topology related to terms in query
     cursor = get_db_cursor()
-    cursor.execute("SELECT label, description FROM nodes")
+    cursor.execute("SELECT label, description, needs_review FROM nodes")
     all_nodes = cursor.fetchall()
-
     graph_context_lines = []
-    for label, desc in all_nodes:
-        # If the node label is mentioned in the question or the retrieved docs, we pull its rich info
-        if label.lower() in req.message.lower() or (label.lower() in raw_context.lower()):
-            graph_context_lines.append(f"- Entity [{label}]: {desc}")
-
-    # Also fetch relationships for those matching nodes to provide logical topology
-    for label, _ in all_nodes:
+    for label, desc, needs_review in all_nodes:
         if label.lower() in req.message.lower():
-            cursor.execute('''
-                SELECT n2.label, e.relation, e.description
-                FROM edges e
-                JOIN nodes n1 ON e.source = n1.id
-                JOIN nodes n2 ON e.target = n2.id
-                WHERE n1.label = ?
-            ''', (label,))
-            for target_label, rel, rel_desc in cursor.fetchall():
-                graph_context_lines.append(f"- Relationship [{label}] -> ({rel}) -> [{target_label}]: {rel_desc}")
+            review_flag = " (NEEDS REVIEW - Contradiction)" if needs_review else ""
+            graph_context_lines.append(f"- Entity [{label}]{review_flag}: {desc}")
 
     graph_context = "\n".join(graph_context_lines)
 
-    prompt = f"""
-    You are an advanced knowledge assistant utilizing a GraphRAG architecture.
-    You will answer the user's question by synthesizing information from two sources:
-    1. Raw Document Snippets (Semantic Vector Search)
-    2. Knowledge Graph Entities and Relationships (Deep logical connections)
-
-    Provide a comprehensive, accurate, and insightful response. If the context does not contain the answer, say "I don't have enough information to answer that based on the uploaded knowledge base."
+    # Step 3: Final Answer
+    final_prompt = f"""
+    You are an advanced knowledge assistant utilizing an Agentic LLM Wiki architecture.
+    Answer the user's query comprehensively using the provided Wiki context and Knowledge Graph context.
+    If the context doesn't contain the answer, you may state that or use your general knowledge, but clarify the source.
 
     IMPORTANT FORMATTING RULES:
-    1. The output must strictly follow formal official document (公文) formatting.
+    1. Output strictly in formal Chinese official document (公文) formatting.
     2. Start every paragraph with two full-width Chinese spaces (　　).
-    3. Do NOT use markdown symbols (e.g., *, #, -, etc.) or special symbols. Just plain text.
-    4. Provide clear, continuous paragraphs.
+    3. Do NOT use markdown symbols (e.g., *, #, -, etc.). Just plain text.
 
-    --- Raw Document Snippets ---
-    {raw_context}
+    --- Wiki Context ---
+    {wiki_context}
 
     --- Knowledge Graph Context ---
     {graph_context}
@@ -373,36 +363,26 @@ def chat_with_knowledge(req: ChatRequest):
         response = openai_client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "You are a highly intelligent and helpful knowledge assistant utilizing GraphRAG. You MUST answer in formal Chinese official document format with NO markdown symbols and ALWAYS start paragraphs with 2 full-width spaces."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "You are a professional knowledge assistant. Adhere strictly to the requested formatting rules."},
+                {"role": "user", "content": final_prompt}
             ]
         )
         return {"reply": response.choices[0].message.content}
     except Exception as e:
         return {"reply": f"Error calling DeepSeek API: {str(e)}"}
 
+# Deprecated endpoints stubbed to not break UI instantly if they call them
+@app.post("/api/nodes")
+def add_node(node: NodeBase): return {"success": True}
+@app.delete("/api/nodes/{node_id}")
+def delete_node(node_id: str): return {"success": True}
+@app.post("/api/edges")
+def add_edge(edge: EdgeBase): return {"success": True}
+@app.delete("/api/edges/{edge_id}")
+def delete_edge(edge_id: str): return {"success": True}
+@app.get("/api/export")
+def export_database(): return {"error": "Deprecated"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-# Tree View / Raw Document API
-@app.get("/api/documents")
-def get_documents():
-    data = chroma_collection.get(include=["metadatas", "documents"])
-
-    # Group chunks by source document
-    docs_map = {}
-
-    for i in range(len(data['ids'])):
-        source = data['metadatas'][i].get("source", "未知来源")
-        if source not in docs_map:
-            docs_map[source] = {"id": source, "label": source, "children": []}
-
-        chunk_preview = data['documents'][i][:50].replace('\n', ' ') + "..."
-        docs_map[source]["children"].append({
-            "id": data['ids'][i],
-            "label": f"片段 {len(docs_map[source]['children']) + 1}: {chunk_preview}",
-            "content": data['documents'][i]
-        })
-
-    return list(docs_map.values())

@@ -415,8 +415,17 @@ defineExpose({ fetchGraphData, highlightNodes })
 
         <div class="panel-body">
           <template v-if="selectedNode">
-            <h2 class="title">{{ selectedNode.label }}</h2>
+            <h2 class="title">
+              {{ selectedNode.label }}
+              <el-tag v-if="selectedNode.needs_review" type="danger" size="small">矛盾/待查</el-tag>
+            </h2>
             <el-tag size="small" type="success" class="mb-3">{{ selectedNode.type || 'Entity' }}</el-tag>
+
+            <div class="section" v-if="selectedNode.source_documents">
+              <h4>信息溯源</h4>
+              <p class="desc-text source-link">{{ selectedNode.source_documents }}</p>
+            </div>
+
 
             <div class="section">
               <h4>背景描述</h4>
@@ -439,7 +448,16 @@ defineExpose({ fetchGraphData, highlightNodes })
           </template>
 
           <template v-if="selectedEdge">
-            <h2 class="title">逻辑：{{ selectedEdge.relation }}</h2>
+            <h2 class="title">
+              逻辑：{{ selectedEdge.relation }}
+              <el-tag v-if="selectedEdge.needs_review" type="danger" size="small">矛盾/待查</el-tag>
+            </h2>
+
+            <div class="section" v-if="selectedEdge.source_documents">
+              <h4>信息溯源</h4>
+              <p class="desc-text source-link">{{ selectedEdge.source_documents }}</p>
+            </div>
+
 
             <div class="section">
               <h4>关联方向</h4>
@@ -619,5 +637,14 @@ defineExpose({ fetchGraphData, highlightNodes })
   padding-top: 15px;
   border-top: 1px solid #ebeef5;
   text-align: right;
+}
+</style>
+
+<style scoped>
+.source-link {
+  font-family: monospace;
+  color: #3b82f6;
+  background: #eff6ff;
+  border-left-color: #3b82f6;
 }
 </style>
