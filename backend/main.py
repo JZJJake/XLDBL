@@ -7,6 +7,9 @@ from pydantic import BaseModel
 import uuid
 import json
 import sqlite3
+from document_parser import parse_file, parse_url, clean_and_unify_text
+import shutil
+import tempfile
 from typing import List, Optional
 
 # Import our database and model setup
@@ -121,22 +124,172 @@ def extract_kg_from_text(text: str):
         return {"nodes": [], "edges": []}
 
 
+
+WIKI_DIR = os.path.join(os.path.dirname(__file__), "data", "wiki")
+os.makedirs(WIKI_DIR, exist_ok=True)
+
+def update_index_md():
+    index_path = os.path.join(WIKI_DIR, "index.md")
+    files = [f for f in os.listdir(WIKI_DIR) if f.endswith(".md") and f != "index.md"]
+    index_content = "# Knowledge Base Index\n\n"
+    for f in files:
+        page_name = f.replace(".md", "")
+        index_content += f"- [{page_name}](./{f})\n"
+    with open(index_path, "w", encoding="utf-8") as file:
+        file.write(index_content)
+
+def generate_wiki_for_source(source_name: str, text: str, kg_data: dict):
+    if not openai_client:
+        return
+
+    # We still need to pass text, but maybe just a summarized version if it's too large, or limit to first N chars
+    # to avoid context limits, but at least we log it or handle it cleanly.
+    # We will use the first 20,000 chars and summarize to represent the core concepts.
+    safe_text = text[:20000]
+
+    prompt = f"""
+    You are an intelligent knowledge base maintainer following the LLM Wiki pattern.
+    I have just ingested a new source named '{source_name}'.
+
+    Please read the following text and the extracted knowledge graph data, and generate a comprehensive markdown summary page for this source.
+    The page should include:
+    - A summary of the core concepts
+    - Key entities extracted
+    - Cross-references or insights that could be valuable for the user.
+
+    Output strictly the markdown content. Do not include introductory conversational text.
+
+    --- Text snippet ---
+    {safe_text}
+
+    --- Extracted KG ---
+    {json.dumps(kg_data, ensure_ascii=False)}
+    """
+
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "You are a professional wiki author."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        wiki_content = response.choices[0].message.content
+        safe_name = "".join([c if c.isalnum() else "_" for c in source_name])
+        wiki_path = os.path.join(WIKI_DIR, f"{safe_name}.md")
+        with open(wiki_path, "w", encoding="utf-8") as f:
+            f.write(wiki_content)
+
+        update_index_md()
+    except Exception as e:
+        print(f"Error generating wiki: {e}")
+
+@app.get("/api/wiki")
+def list_wiki_pages():
+    if not os.path.exists(WIKI_DIR):
+        return {"pages": []}
+    files = [f for f in os.listdir(WIKI_DIR) if f.endswith(".md")]
+    return {"pages": files}
+
+@app.get("/api/wiki/{page_name}")
+def get_wiki_page(page_name: str):
+    import os
+    # Sanitize page_name to prevent path traversal
+    safe_page_name = "".join([c for c in page_name if c.isalnum() or c in ['_', '-', '.']])
+    if safe_page_name != page_name or ".." in page_name or "/" in page_name or "\\" in page_name:
+        raise HTTPException(status_code=400, detail="Invalid page name")
+
+    page_path = os.path.join(WIKI_DIR, safe_page_name)
+    if not os.path.exists(page_path) or not os.path.isfile(page_path):
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    with open(page_path, "r", encoding="utf-8") as f:
+        return {"content": f.read()}
+
+@app.post("/api/wiki/chat_manage")
+def chat_manage_wiki(req: ChatRequest):
+    if not openai_client:
+        return {"reply": "DeepSeek API not configured."}
+
+    # Read index
+    index_path = os.path.join(WIKI_DIR, "index.md")
+    index_content = ""
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            index_content = f.read()
+
+    prompt = f"""
+    You are an intelligent knowledge base (Wiki) manager.
+    The user is asking you to perform management operations, answer questions, or update the wiki.
+
+    Current Wiki Index:
+    {index_content}
+
+    User request: {req.message}
+
+    If the user is asking a question about the knowledge, answer it based on what you know or suggest reading specific pages.
+    If the user asks you to organize or restructure, explain how you would do it or what you have "done" (conceptually).
+
+    Answer in formal Chinese official document format with NO markdown symbols and ALWAYS start paragraphs with 2 full-width spaces.
+    """
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "You are a professional knowledge base manager."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return {"reply": response.choices[0].message.content}
+    except Exception as e:
+        return {"reply": f"Error calling DeepSeek API: {str(e)}"}
+
+
 # --- APIS ---
 
-@app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    if not file.filename.endswith('.md'):
-        raise HTTPException(status_code=400, detail="Only Markdown (.md) files are supported")
 
-    content = await file.read()
-    text = content.decode('utf-8', errors='ignore')
+@app.post("/api/upload")
+async def upload_file(
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None)
+):
+    if not file and not url:
+        raise HTTPException(status_code=400, detail="Must provide either a file or a URL")
+
+    text = ""
+    source_name = ""
+
+    if url:
+        text = parse_url(url)
+        source_name = url
+    else:
+        # Create a temporary file to save the upload
+        try:
+            suffix = os.path.splitext(file.filename)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                shutil.copyfileobj(file.file, tmp)
+                tmp_path = tmp.name
+
+            text = parse_file(tmp_path, file.filename)
+            source_name = file.filename
+        finally:
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from the provided source")
+
+    # Clean text with DeepSeek
+    cleaned_text = clean_and_unify_text(text, openai_client)
 
     # 1. Chunk Text & Calculate Embeddings
-    chunks = chunk_text(text)
+    chunks = chunk_text(cleaned_text)
     chunk_ids = [str(uuid.uuid4()) for _ in chunks]
     embeddings = embedding_model.encode(chunks).tolist()
 
-    metadata = [{"source": file.filename} for _ in chunks]
+    metadata = [{"source": source_name} for _ in chunks]
 
     # Store in ChromaDB
     chroma_collection.add(
@@ -147,7 +300,7 @@ async def upload_file(file: UploadFile = File(...)):
     )
 
     # 2. Extract Deep KG using DeepSeek
-    kg_data = extract_kg_from_text(text)
+    kg_data = extract_kg_from_text(cleaned_text)
 
     # 3. Deduplicate and Store KG in SQLite
     cursor = get_db_cursor()
@@ -212,7 +365,11 @@ async def upload_file(file: UploadFile = File(...)):
 
     sqlite_conn.commit()
 
-    return {"message": "File processed successfully", "chunks": len(chunks), "nodes_added": nodes_added, "edges_added": edges_added}
+    # Process Wiki generation
+    generate_wiki_for_source(source_name, cleaned_text, kg_data)
+
+    return {"message": "Source processed successfully", "chunks": len(chunks), "nodes_added": nodes_added, "edges_added": edges_added}
+
 
 
 @app.get("/api/graph")

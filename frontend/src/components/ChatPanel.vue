@@ -6,10 +6,11 @@ import { Position } from '@element-plus/icons-vue'
 const emit = defineEmits(['reply'])
 
 const messages = ref<{role: string, content: string}[]>([
-  { role: 'assistant', content: '您好！我是 DeepSeek 知识库助手。您可以向我提问，我会结合图谱和文档内容为您解答。' }
+  { role: 'assistant', content: '您好！我是 DeepSeek 知识库助手。您可以向我提问，也可以要求我对知识库进行管理和组织，我会结合图谱、文档内容及Wiki百科为您解答和操作。' }
 ])
 const inputMessage = ref('')
 const isLoading = ref(false)
+const chatMode = ref('query') // 'query' or 'manage'
 const chatBodyRef = ref<HTMLElement | null>(null)
 
 const scrollToBottom = () => {
@@ -27,12 +28,12 @@ const sendMessage = async () => {
   messages.value.push({ role: 'user', content: userMsg })
   inputMessage.value = ''
   isLoading.value = true
-  // clear highlight from graph while loading new query
   emit('reply', [])
   scrollToBottom()
 
   try {
-    const res = await axios.post('/api/chat', { message: userMsg })
+    const endpoint = chatMode.value === 'query' ? '/api/chat' : '/api/wiki/chat_manage'
+    const res = await axios.post(endpoint, { message: userMsg })
     messages.value.push({ role: 'assistant', content: res.data.reply })
   } catch (error) {
     messages.value.push({ role: 'assistant', content: '错误：无法连接到服务器或大模型接口。' })
@@ -45,7 +46,13 @@ const sendMessage = async () => {
 
 <template>
   <div class="chat-panel">
-    <h3>DeepSeek 深度交流</h3>
+    <div class="header-row">
+      <h3>DeepSeek 深度交流与管理</h3>
+      <el-radio-group v-model="chatMode" size="small">
+        <el-radio-button label="query">知识查询</el-radio-button>
+        <el-radio-button label="manage">管理维护</el-radio-button>
+      </el-radio-group>
+    </div>
     <div class="chat-body" ref="chatBodyRef">
       <div
         v-for="(msg, index) in messages"
@@ -61,7 +68,7 @@ const sendMessage = async () => {
     <div class="chat-input">
       <el-input
         v-model="inputMessage"
-        placeholder="向知识库提问..."
+        placeholder="向知识库提问或下达管理指令(如：整理某个知识点，生成新词条)..."
         @keyup.enter="sendMessage"
         :disabled="isLoading"
       >
@@ -80,12 +87,18 @@ const sendMessage = async () => {
   height: 100%;
   overflow: hidden;
 }
-.chat-panel h3 {
-  margin-top: 0;
-  color: #f3f4f6;
-  font-size: 16px;
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   border-bottom: 2px solid #3b82f6;
   padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+.header-row h3 {
+  margin: 0;
+  color: #f3f4f6;
+  font-size: 16px;
 }
 .chat-body {
   flex: 1;
@@ -105,7 +118,7 @@ const sendMessage = async () => {
   font-size: 14px;
   line-height: 1.6;
   word-wrap: break-word;
-  white-space: pre-wrap; /* Supports wide space indentations */
+  white-space: pre-wrap;
 }
 .message.user {
   align-self: flex-end;
