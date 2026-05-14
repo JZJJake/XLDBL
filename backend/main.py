@@ -12,7 +12,7 @@ import tempfile
 from typing import List, Optional
 
 from database import init_sqlite, DB_DIR
-from document_parser import parse_file, parse_url
+from document_parser import parse_file, parse_url, clean_and_unify_text
 
 app = FastAPI()
 
@@ -76,6 +76,8 @@ def ingest_document(source_name: str, text: str):
     if not openai_client:
         return {"nodes": 0, "edges": 0}
 
+    current_routing_tree = get_routing_tree()
+
     prompt = f"""
     You are an intelligent knowledge base ingestion agent following the LLM Wiki pattern.
     I have just uploaded a new source named '{source_name}'.
@@ -87,18 +89,23 @@ def ingest_document(source_name: str, text: str):
        - Nodes: id, label, type, description, needs_review (bool).
        - Edges: id, source, target, relation, description, needs_review (bool).
     2. GENERATE WIKI: Generate a comprehensive markdown summary for this source.
-    3. ROUTING UPDATE: Propose an updated hierarchy for the ROUTING.md tree incorporating this new source.
+    3. ROUTING UPDATE: Review the existing ROUTING index tree. You must output a FULL, UPDATED ROUTING tree that includes the existing paths and correctly incorporates this new source into the hierarchy. DO NOT erase existing items.
+
+    EXISTING ROUTING TREE:
+    {current_routing_tree}
 
     OUTPUT FORMAT:
     You MUST output valid JSON ONLY, strictly following this structure:
     {{
        "graph": {{ "nodes": [...], "edges": [...] }},
-       "wiki_markdown": "# Title\\n\\nContent...",
-       "routing_markdown": "- Topic\\n  - [{source_name}](./{source_name}.md)"
+       "wiki_markdown": "# Title
+
+Content...",
+       "routing_markdown": "Full updated routing markdown here..."
     }}
 
     --- Text snippet (Start) ---
-    {text[:15000]} # Limit to 15k chars for safety, but large context handles more.
+    {text}
     --- Text snippet (End) ---
     """
 
@@ -224,6 +231,9 @@ async def upload_file(
     if not text.strip():
         raise HTTPException(status_code=400, detail="Could not extract text from the provided source")
 
+    # Clean text
+    text = clean_and_unify_text(text, openai_client)
+
     # Save raw document
     save_raw_document(source_name, text)
 
@@ -311,8 +321,15 @@ def agentic_chat(req: ChatRequest):
             temperature=0.1
         )
         try:
-            pages_to_fetch = json.loads(route_resp.choices[0].message.content.strip("` \n"))
-        except:
+            raw_content = route_resp.choices[0].message.content.strip()
+            # Remove markdown code block wrapping if present
+            if raw_content.startswith("```"):
+                raw_content = raw_content.split("\n", 1)[-1]
+                if raw_content.endswith("```"):
+                    raw_content = raw_content[:-3].strip()
+            pages_to_fetch = json.loads(raw_content)
+        except Exception as e:
+            print(f"Failed to parse routing JSON: {e}")
             pages_to_fetch = []
     except Exception as e:
         print(f"Routing error: {e}")
