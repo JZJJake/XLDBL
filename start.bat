@@ -1,59 +1,36 @@
 @echo off
-setlocal enabledelayedexpansion
-
 echo ========================================================
-echo   Starting Knowledge Graph ^& Vector DB System
+echo Synthadoc Installation and Startup Script
 echo ========================================================
 
-:: Set Hugging Face Mirror
-set HF_ENDPOINT=https://hf-mirror.com
-
-:: 1. Check Python
+REM Check for Python
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [Error] Python is not installed or not in PATH!
+    echo Error: Python is not installed or not in PATH.
     pause
     goto :eof
 )
-echo [OK] Python found.
 
-:: 2. Check NPM
-call npm --version >nul 2>&1
+echo Installing dependencies...
+pip install -e ".[dev]"
 if %errorlevel% neq 0 (
-    echo [Error] NPM is not installed or not in PATH! Please install Node.js.
+    echo Error: Failed to install dependencies.
     pause
     goto :eof
 )
-echo [OK] NPM found.
 
-:: 3. Setup Backend Environment and Dependencies
 echo.
-echo Installing Backend Dependencies (using Tsinghua mirror)...
-cd backend
-python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-cd ..
+echo Please enter your DeepSeek API Key:
+set /p DEEPSEEK_API_KEY="API Key: "
 
-:: 4. Setup Frontend Dependencies
+if "%DEEPSEEK_API_KEY%"=="" (
+    echo Warning: API Key is empty. You may need to provide it later.
+) else (
+    setx DEEPSEEK_API_KEY "%DEEPSEEK_API_KEY%"
+    echo API Key saved.
+)
+
 echo.
-echo Installing Frontend Dependencies...
-cd frontend
-call npm install
-cd ..
-
-:: 5. Start Services
-echo.
-echo ========================================================
-echo   Starting Backend and Frontend Services
-echo ========================================================
-
-:: Start Backend in a new window
-start "FastAPI Backend" cmd /k "set HF_ENDPOINT=https://hf-mirror.com && cd backend && title FastAPI Backend && python main.py"
-
-:: Start Frontend in a new window
-start "Vue Frontend" cmd /k "cd frontend && title Vue Frontend && npm run dev -- --host 0.0.0.0"
-
-echo Services have been started in separate windows!
-echo Backend is running on http://0.0.0.0:8000
-echo Frontend is running on http://0.0.0.0:5173 (Please check the Vue Frontend window for exact IP URLs)
-echo.
+echo Starting Synthadoc...
+synthadoc serve
 pause

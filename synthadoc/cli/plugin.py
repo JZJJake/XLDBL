@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 William Johnason / axoviq.com
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from synthadoc.cli._wiki import resolve_wiki
+from synthadoc.cli.install import resolve_wiki_path
+from synthadoc.cli.main import app
+
+plugin_app = typer.Typer(name="plugin", help="中文提示")
+app.add_typer(plugin_app)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PLUGIN_SRC = _REPO_ROOT / "obsidian-plugin"
+_PLUGIN_FILES = ("main.js", "manifest.json", "styles.css")
+_PLUGIN_ID = "synthadoc"
+
+
+_LOOPBACK_ADDRS = frozenset({"127.0.0.1", "::1", "localhost"})
+_ANY_IFACE_ADDRS = frozenset({"0.0.0.0", "::"})
+
+
+def _write_plugin_data(wiki_path: Path, plugin_dir: Path) -> None:
+    """Write (or update) data.json with the wiki's server URL.
+
+    Reads host and port from the wiki's config.toml.  If data.json already
+    exists (e.g. the user has customised other settings), only ``serverUrl``
+    is updated — all other keys are preserved.
+    """
+    import tomllib
+    host = "127.0.0.1"
+    port = 7070
+    config_path = wiki_path / ".synthadoc" / "config.toml"
+    if config_path.exists():
+        try:
+            cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            srv = cfg.get("server", {})
+            host = srv.get("host", "127.0.0.1")
+            port = srv.get("port", 7070)
+        except Exception:
+            pass
+
+    # Loopback and any-interface binds → plugin connects via 127.0.0.1 locally.
+    # Specific external address → use it directly for remote vault support.
+    if host in _LOOPBACK_ADDRS or host in _ANY_IFACE_ADDRS:
+        server_url = f"http://127.0.0.1:{port}"
+    else:
+        server_url = f"http://{host}:{port}"
+
+    data_json = plugin_dir / "data.json"
+    existing: dict = {}
+    if data_json.exists():
+        try:
+            existing = json.loads(data_json.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    existing["serverUrl"] = server_url
+    data_json.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+
+
+@plugin_app.command("install")
+def plugin_install_cmd(
+    wiki: Optional[str] = typer.Argument(None, help="中文提示"),
+    w: Optional[str] = typer.Option(None, "--wiki", "-w", help="中文提示"),
+):
+    """Copy the built Obsidian plugin into a wiki vault.
+
+    \b
+    Examples:
+      synthadoc plugin install ai-research
+      synthadoc plugin install -w ai-research
+      synthadoc plugin install               # uses default wiki (synthadoc use <name>)
+    """
+    wiki_name = resolve_wiki(w or wiki)
+    wiki_path = resolve_wiki_path(wiki_name)
+
+    if not wiki_path.exists():
+        typer.echo(
+            f"Error: wiki path '{wiki_path}' does not exist on disk.\n"
+            f"The registry entry for '{wiki_name}' may be stale.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if not _PLUGIN_SRC.exists():
+        typer.echo(
+            f"Error: obsidian-plugin/ not found at '{_PLUGIN_SRC}'.\n"
+            "Run this command from the synthadoc repo root.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    dest_dir = wiki_path / ".obsidian" / "plugins" / _PLUGIN_ID
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = []
+    for filename in _PLUGIN_FILES:
+        src = _PLUGIN_SRC / filename
+        if src.exists():
+            shutil.copy2(src, dest_dir / filename)
+            copied.append(filename)
+
+    if not copied:
+        typer.echo(
+            "Error: no plugin files found in obsidian-plugin/.\n"
+            "Build the plugin first: cd obsidian-plugin && npm run build",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    _write_plugin_data(wiki_path, dest_dir)
+
+    typer.echo(f"Plugin installed into: {dest_dir}")
+    for f in copied:
+        typer.echo(f"  copied  {f}")
+    typer.echo(f"  wrote   data.json (server URL configured automatically)")
+    typer.echo()
+    typer.echo("Open Obsidian, go to Settings > Community Plugins, and enable 'Synthadoc'.")

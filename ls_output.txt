@@ -1,0 +1,21 @@
+total 156
+drwxr-xr-x 11 jules root   4096 May 16 03:07 .
+drwxr-xr-x  1 root  root   4096 May 16 03:06 ..
+drwxrwxr-x  7 jules jules  4096 May 16 03:07 .git
+-rw-rw-r--  1 jules jules   252 May 16 03:06 .gitattributes
+drwxrwxr-x  3 jules jules  4096 May 16 03:06 .github
+-rw-rw-r--  1 jules jules   391 May 16 03:06 .gitignore
+-rw-rw-r--  1 jules jules  5528 May 16 03:06 CODE_OF_CONDUCT.md
+-rw-rw-r--  1 jules jules  2769 May 16 03:06 CONTRIBUTING.md
+-rw-rw-r--  1 jules jules 34523 May 16 03:06 LICENSE
+-rw-rw-r--  1 jules jules 48923 May 16 03:06 README.md
+-rw-rw-r--  1 jules jules     6 May 16 03:06 VERSION
+drwxrwxr-x  3 jules jules  4096 May 16 03:06 docs
+drwxrwxr-x  2 jules jules  4096 May 16 03:06 hooks
+-rw-rw-r--  1 jules jules     0 May 16 03:07 ls_output.txt
+drwxrwxr-x  4 jules jules  4096 May 16 03:06 obsidian-plugin
+-rw-rw-r--  1 jules jules  1859 May 16 03:06 pyproject.toml
+drwxrwxr-x  2 jules jules  4096 May 16 03:06 scripts
+drwxrwxr-x 11 jules jules  4096 May 16 03:06 synthadoc
+drwxrwxr-x 11 jules jules  4096 May 16 03:06 tests
+drwxrwxr-x  2 jules jules  4096 May 16 03:06 wiki
