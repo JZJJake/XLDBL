@@ -1,0 +1,744 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Paul Chen / axoviq.com
+from __future__ import annotations
+
+import asyncio
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request, Response
+from pydantic import BaseModel, field_validator
+from starlette.middleware.base import BaseHTTPMiddleware
+
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
+_MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _install_win32_conn_reset_filter() -> None:
+    """Downgrade spurious ConnectionResetError noise from asyncio on Windows.
+
+    When a client abruptly closes a TCP connection (RST instead of FIN),
+    Windows IOCP raises ConnectionResetError inside the cleanup callback
+    _ProactorBasePipeTransport._call_connection_lost.  Python's asyncio logs
+    this at ERROR level even though no request is dropped and nothing is wrong.
+    We install a tight exception handler that downgrades only this specific case
+    to DEBUG (still visible via --verbose / log file) and forwards everything
+    else to the default handler unchanged.
+    """
+    loop = asyncio.get_event_loop()
+    _prev = loop.get_exception_handler()
+
+    def _handler(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, ConnectionResetError) and "_call_connection_lost" in context.get("message", ""):
+            logger.debug("win32 socket closed by remote host (WinError 10054) — harmless")
+            return
+        (_prev or loop.default_exception_handler)(loop, context)
+
+    loop.set_exception_handler(_handler)
+
+
+def _classify_llm_error(exc: Exception) -> "HTTPException | None":
+    """Return a meaningful HTTPException for known LLM API error codes, or None."""
+    from synthadoc.errors import DailyQuotaExhaustedException, CodingToolQuotaExhaustedException
+    _SWITCH = "Switch to another provider by editing [agents] in .synthadoc/config.toml and restarting the server (options: anthropic, openai, gemini, groq, minimax, deepseek, ollama)."
+    if isinstance(exc, DailyQuotaExhaustedException):
+        return HTTPException(
+            status_code=503,
+            detail=f"Daily quota exhausted for {exc.provider} — no requests possible until midnight UTC. {_SWITCH}",
+        )
+    if isinstance(exc, CodingToolQuotaExhaustedException):
+        return HTTPException(
+            status_code=503,
+            detail=f"Coding tool quota exhausted — {exc}. {_SWITCH}",
+        )
+
+    # openai/anthropic SDKs set status_code directly on the exception;
+    # httpx.HTTPStatusError (used by OllamaProvider) stores it on exc.response.
+    code = getattr(exc, "status_code", None)
+    if code is None:
+        resp = getattr(exc, "response", None)
+        code = getattr(resp, "status_code", None)
+
+    if code == 401:
+        msg = str(exc)
+        if "deepseek" in msg.lower() or "api.deepseek.com" in msg.lower():
+            var = "DEEPSEEK_API_KEY"
+        elif "minimax" in msg.lower():
+            var = "MINIMAX_API_KEY"
+        elif "groq" in msg.lower():
+            var = "GROQ_API_KEY"
+        elif "generativelanguage" in msg.lower() or "gemini" in msg.lower():
+            var = "GEMINI_API_KEY"
+        elif "anthropic" in msg.lower():
+            var = "ANTHROPIC_API_KEY"
+        elif "openai" in msg.lower():
+            var = "OPENAI_API_KEY"
+        else:
+            var = "your provider's API key env var"
+        return HTTPException(
+            status_code=401,
+            detail=f"LLM provider rejected the API key (401). Check that {var} is set correctly and restart the server.",
+        )
+    if code == 402:
+        body = getattr(exc, "body", None) or {}
+        err_msg = ""
+        if isinstance(body, dict):
+            err_msg = body.get("error", {}).get("message", "")
+        detail = err_msg or "Insufficient balance"
+        return HTTPException(
+            status_code=402,
+            detail=f"LLM provider payment required (402): {detail}. Top up your account balance at your provider's billing page and retry.",
+        )
+    if code == 429:
+        msg = str(exc)
+        _SWITCH_429 = "Switch to another provider by editing [agents] in .synthadoc/config.toml and restarting the server (options: anthropic, openai, gemini, groq, minimax, deepseek, ollama)."
+        if "generativelanguage.googleapis.com" in msg or "gemini" in msg.lower():
+            hint = f"Gemini free-tier quota exhausted. Wait for the daily reset or switch providers. {_SWITCH_429}"
+        elif "groq" in msg.lower():
+            hint = f"Groq rate limit hit. Wait for the retry window or switch providers. {_SWITCH_429}"
+        elif "anthropic" in msg.lower():
+            hint = f"Anthropic rate limit hit. Wait a moment or switch providers. {_SWITCH_429}"
+        elif "openai" in msg.lower():
+            hint = f"OpenAI rate limit hit. Wait a moment or switch providers. {_SWITCH_429}"
+        else:
+            hint = f"LLM provider rate limit hit. Wait a moment or switch providers. {_SWITCH_429}"
+        return HTTPException(
+            status_code=429,
+            detail=f"LLM quota exceeded (429). {hint}",
+        )
+    if code == 503:
+        return HTTPException(
+            status_code=503,
+            detail="LLM provider temporarily overloaded (503). Retry in a moment.",
+        )
+    if code == 529:
+        return HTTPException(
+            status_code=503,
+            detail="LLM provider temporarily overloaded (529). Retry in a moment.",
+        )
+    return None
+_WORKER_POLL_SECONDS = 2
+_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+_FM_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+
+
+class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose Content-Length exceeds the configured limit."""
+
+    def __init__(self, app, max_bytes: int = _MAX_BODY_BYTES) -> None:
+        super().__init__(app)
+        self._max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            if int(content_length) > self._max_bytes:
+                return Response(content="Request body too large", status_code=413)
+        return await call_next(request)
+
+
+class QueryRequest(BaseModel):
+    question: str
+    save: bool = False
+
+    @field_validator("question")
+    @classmethod
+    def question_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError("question must not be empty")
+        return v
+
+
+class IngestRequest(BaseModel):
+    source: str
+    force: bool = False
+    max_results: int | None = None
+
+
+class LintRequest(BaseModel):
+    scope: str = "all"
+    auto_resolve: bool = False
+
+
+class ScaffoldRequest(BaseModel):
+    domain: str
+
+    @field_validator("domain")
+    @classmethod
+    def domain_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError("domain must not be empty")
+        return v
+
+
+class ContextBuildRequest(BaseModel):
+    goal: str
+    token_budget: int | None = None   # falls back to cfg.query.context_token_budget
+
+
+class AnalyseRequest(BaseModel):
+    source: str
+
+    @field_validator("source")
+    @classmethod
+    def source_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError("source must not be empty")
+        return v
+
+
+class StagingPolicyRequest(BaseModel):
+    policy: str
+    confidence_min: str | None = None
+
+
+def _parse_retry_after(exc: Exception, default: float = 60.0) -> float:
+    """Parse 'Please try again in Xm Y.Zs' from a rate-limit error message."""
+    m = re.search(r"Please try again in (?:(\d+)m\s*)?(\d+(?:\.\d+)?)s", str(exc))
+    if m:
+        return float(m.group(1) or 0) * 60 + float(m.group(2))
+    return default
+
+
+async def _worker_loop(orch) -> None:
+    """Background task: poll jobs.db and execute pending jobs."""
+    sleep_secs = _WORKER_POLL_SECONDS
+    while True:
+        try:
+            job = await orch.queue.dequeue()
+            sleep_secs = _WORKER_POLL_SECONDS  # reset after a successful dequeue
+            if job:
+                if job.operation == "ingest":
+                    source = job.payload.get("source", "")
+                    force = job.payload.get("force", False)
+                    max_results = job.payload.get("max_results")
+                    await orch._run_ingest(job.id, source, auto_confirm=True, force=force,
+                                           max_results=max_results)
+                elif job.operation == "lint":
+                    scope = job.payload.get("scope", "all")
+                    auto_resolve = job.payload.get("auto_resolve", False)
+                    await orch._run_lint(job.id, scope=scope, auto_resolve=auto_resolve)
+                elif job.operation == "scaffold":
+                    domain = job.payload.get("domain", "")
+                    await orch._run_scaffold(job.id, domain=domain)
+        except Exception as exc:
+            known = _classify_llm_error(exc)
+            if known and known.status_code == 503 and (
+                "Daily quota" in (known.detail or "") or "Coding tool quota" in (known.detail or "")
+            ):
+                # Quota exhausted — no point retrying pending jobs until the user
+                # tops up credits or waits for the reset. Log once and keep polling.
+                logger.error("Quota exhausted — pending jobs will fail. %s", known.detail)
+                sleep_secs = _WORKER_POLL_SECONDS
+            elif known and known.status_code == 429:
+                sleep_secs = _parse_retry_after(exc)
+                logger.warning(
+                    "Rate limit hit in worker — pausing %.0f s before next job. "
+                    "(%d pending jobs will wait.) %s",
+                    sleep_secs,
+                    len([j for j in asyncio.all_tasks() if not j.done()]),
+                    known.detail,
+                )
+            else:
+                logger.exception("Worker loop error — job recorded in jobs.db; continuing")
+                sleep_secs = _WORKER_POLL_SECONDS
+
+        await asyncio.sleep(sleep_secs)
+
+
+def create_app(wiki_root: Path, max_body_bytes: int = _MAX_BODY_BYTES) -> FastAPI:
+    import os
+    import synthadoc
+    from synthadoc.config import load_config
+    from synthadoc.core.orchestrator import Orchestrator
+
+    # Expose wiki root so skills (e.g. web_search) can load the dynamic blocked-domains list
+    os.environ["SYNTHADOC_WIKI_ROOT"] = str(wiki_root)
+
+    cfg = load_config(project_config=wiki_root / ".synthadoc" / "config.toml")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if sys.platform == "win32":
+            _install_win32_conn_reset_filter()
+        orch = Orchestrator(wiki_root=wiki_root, config=cfg)
+        await orch.init()
+        app.state.orch = orch
+        worker = asyncio.create_task(_worker_loop(orch))
+        yield
+        worker.cancel()
+
+    app = FastAPI(title="synthadoc", version=synthadoc.__version__, lifespan=lifespan)
+    app.add_middleware(ContentSizeLimitMiddleware, max_bytes=max_body_bytes)
+
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["app://obsidian.md", "http://localhost", "http://127.0.0.1"],
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Content-Type"],
+    )
+
+    @app.get("/", response_class=Response)
+    async def index():
+        from synthadoc.cli.logo import banner_text
+        import synthadoc
+        text = banner_text(version=synthadoc.__version__)
+        text += (
+            f"  Endpoints\n"
+            f"  ---------------------------------\n"
+            f"  GET  /health          liveness probe\n"
+            f"  GET  /status          wiki stats\n"
+            f"  POST /analyse         analyse source without writing pages\n"
+            f"  POST /jobs/ingest     enqueue ingest job\n"
+            f"  POST /jobs/lint       enqueue lint job\n"
+            f"  GET  /jobs            list jobs\n"
+            f"  GET  /jobs/{{id}}       job detail\n"
+            f"  POST /query           query the wiki\n"
+            f"  GET  /lint/report     orphans + contradictions\n"
+        )
+        return Response(content=text, media_type="text/plain; charset=utf-8")
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    @app.get("/status")
+    async def status():
+        orch = app.state.orch
+        jobs = await orch.queue.list_jobs()
+        pending = sum(1 for j in jobs if j.status == "pending")
+        return {
+            "wiki": str(wiki_root),
+            "pages": len(orch._store.list_pages()),
+            "jobs_pending": pending,
+            "jobs_total": len(jobs),
+        }
+
+    async def _run_query(question: str) -> dict:
+        try:
+            result = await app.state.orch.query(question)
+        except Exception as exc:
+            known = _classify_llm_error(exc)
+            if known:
+                logger.warning("LLM rate limit during query: %s", exc)
+                raise known from exc
+            if isinstance(exc, (EnvironmentError, OSError)) and "[ERR-PROV-" in str(exc):
+                logger.warning("Provider not available: %s", exc)
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            logger.exception("Query failed")
+            raise HTTPException(status_code=502, detail="LLM provider unavailable") from exc
+        return {
+            "answer": result.answer,
+            "citations": result.citations,
+            "knowledge_gap": result.knowledge_gap,
+            "suggested_searches": result.suggested_searches,
+        }
+
+    @app.get("/query")
+    async def query(q: str):
+        if not q.strip():
+            raise HTTPException(status_code=400, detail="q must not be empty")
+        return await _run_query(q)
+
+    @app.post("/query")
+    async def query_post(req: QueryRequest):
+        return await _run_query(req.question)
+
+    @app.post("/analyse")
+    async def analyse_source(req: AnalyseRequest):
+        """Run analysis pass on a source and return structured result without writing pages."""
+        from synthadoc.agents.ingest_agent import IngestAgent
+        from synthadoc.providers import make_provider
+        from synthadoc.agents.skill_agent import SkillAgent
+        orch = app.state.orch
+        agent = IngestAgent(
+            provider=make_provider("ingest", orch._cfg),
+            store=orch._store, search=orch._search,
+            log_writer=orch._log, audit_db=orch._audit,
+            cache=orch._cache, max_pages=orch._cfg.ingest.max_pages_per_ingest,
+            wiki_root=orch._root,
+            cache_version=orch._cfg.cache.version,
+            fetch_timeout=orch._cfg.ingest.fetch_timeout_seconds,
+        )
+        skill = SkillAgent()
+        extracted = await skill.extract(req.source)
+        text = extracted.text[:8000]
+        analysis = await agent._analyse(text, bust_cache=False)
+        analysis.pop("_tokens", None)
+        return {"source": req.source, "analysis": analysis}
+
+    @app.post("/jobs/ingest")
+    async def enqueue_ingest(req: IngestRequest):
+        from pathlib import Path as _Path
+        from synthadoc.agents.skill_agent import SkillAgent
+        source = req.source
+        # Normalise backslash URLs so Windows-pasted forms (e.g. "https:\example.com\path")
+        # are stored as proper URLs and are not mistakenly path-resolved.
+        from synthadoc.agents.skill_agent import _normalize_url
+        _normalised = _normalize_url(source)
+        if _normalised.lower().startswith(("http://", "https://")):
+            source = _normalised
+        if SkillAgent().needs_path_resolution(source):
+            p = _Path(source)
+            if not p.is_absolute():
+                # Resolve vault-relative paths (e.g. "raw_sources/file.pdf") against
+                # wiki root so they work regardless of server working directory.
+                source = str((wiki_root / source).resolve())
+        payload: dict = {"source": source, "force": req.force}
+        if req.max_results is not None:
+            payload["max_results"] = req.max_results
+        job_id = await app.state.orch.queue.enqueue("ingest", payload)
+        return {"job_id": job_id}
+
+    @app.post("/jobs/lint")
+    async def enqueue_lint(req: LintRequest):
+        job_id = await app.state.orch.queue.enqueue(
+            "lint", {"scope": req.scope, "auto_resolve": req.auto_resolve}
+        )
+        return {"job_id": job_id}
+
+    @app.get("/lint/report")
+    async def lint_report():
+        import yaml as _yaml
+        from synthadoc.agents.lint_agent import find_orphan_slugs, LINT_SKIP_SLUGS
+        wiki_dir = wiki_root / "wiki"
+        pages = list(wiki_dir.glob("*.md"))
+
+        page_texts: dict[str, str] = {p.stem: p.read_text(encoding="utf-8") for p in pages}
+
+        contradiction_details = []
+        for stem, text in page_texts.items():
+            if stem not in LINT_SKIP_SLUGS and "status: contradicted" in text:
+                fm_m = _FM_RE.match(text)
+                fm: dict = {}
+                if fm_m:
+                    try:
+                        fm = _yaml.safe_load(fm_m.group(1)) or {}
+                    except Exception:
+                        pass
+                contradiction_details.append({
+                    "slug": stem,
+                    "contradiction_note": fm.get("contradiction_note") or None,
+                    "unresolved_note": fm.get("unresolved_note") or None,
+                })
+
+        page_bodies: dict[str, str] = {
+            slug: (text[m.end():] if (m := _FM_RE.match(text)) else text)
+            for slug, text in page_texts.items()
+        }
+        orphan_slugs = find_orphan_slugs(page_bodies)
+
+        orphan_details = []
+        for slug in orphan_slugs:
+            fm_m = _FM_RE.match(page_texts.get(slug, ""))
+            fm = {}
+            if fm_m:
+                try:
+                    fm = _yaml.safe_load(fm_m.group(1)) or {}
+                except Exception:
+                    pass
+            title = fm.get("title") or slug.replace("-", " ").title()
+            tags = fm.get("tags") or []
+            if isinstance(tags, list) and tags:
+                hint = ", ".join(str(t) for t in tags[:4])
+            else:
+                hint = title
+            orphan_details.append({
+                "slug": slug,
+                "index_suggestion": f"- [[{slug}]] — {hint}",
+            })
+
+        return {
+            "contradictions": [d["slug"] for d in contradiction_details],
+            "contradiction_details": contradiction_details,
+            "orphans": [d["slug"] for d in orphan_details],
+            "orphan_details": orphan_details,
+        }
+
+    @app.get("/jobs")
+    async def list_jobs(status: str | None = None):
+        from synthadoc.core.queue import JobStatus
+        try:
+            job_status = JobStatus(status) if status else None
+        except ValueError:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail=f"Invalid status {status!r}. Valid values: {[s.value for s in JobStatus]}")
+        jobs = await app.state.orch.queue.list_jobs(status=job_status)
+        return [{"id": j.id, "status": j.status, "operation": j.operation,
+                 "created_at": str(j.created_at), "payload": j.payload,
+                 "error": j.error, "result": j.result, "progress": j.progress} for j in jobs]
+
+    @app.get("/jobs/{job_id}")
+    async def get_job(job_id: str):
+        # O(n) scan — acceptable for typical queue sizes (< 1000 active jobs); add an index if needed
+        jobs = await app.state.orch.queue.list_jobs()
+        for j in jobs:
+            if j.id == job_id:
+                return {"id": j.id, "status": j.status, "operation": j.operation,
+                        "created_at": str(j.created_at), "error": j.error,
+                        "result": j.result, "progress": j.progress}
+        raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+
+    @app.delete("/jobs/{job_id}")
+    async def delete_job(job_id: str):
+        jobs = await app.state.orch.queue.list_jobs()
+        job = next((j for j in jobs if j.id == job_id), None)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+        if job.status in ("pending", "in_progress"):
+            raise HTTPException(status_code=409, detail=f"Cannot delete a job with status {job.status!r}")
+        await app.state.orch.queue.delete(job_id, app.state.orch._audit)
+        return {"deleted": job_id}
+
+    @app.post("/jobs/{job_id}/retry")
+    async def retry_job(job_id: str):
+        jobs = await app.state.orch.queue.list_jobs()
+        if not any(j.id == job_id for j in jobs):
+            raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+        await app.state.orch.queue.retry(job_id)
+        return {"retried": job_id}
+
+    @app.post("/jobs/cancel-pending")
+    async def cancel_pending_jobs():
+        count = await app.state.orch.queue.cancel_pending()
+        return {"cancelled": count}
+
+    @app.delete("/jobs")
+    async def purge_jobs(older_than: int = 7):
+        count = await app.state.orch.queue.purge(older_than_days=older_than)
+        return {"purged": count, "older_than_days": older_than}
+
+    @app.post("/jobs/scaffold")
+    async def enqueue_scaffold(req: ScaffoldRequest):
+        job_id = await app.state.orch.queue.enqueue(
+            "scaffold", {"domain": req.domain}
+        )
+        return {"job_id": job_id}
+
+    @app.get("/audit/history")
+    async def audit_history(limit: int = 50):
+        records = await app.state.orch._audit.list_ingests(limit=limit)
+        return {"records": records, "count": len(records)}
+
+    @app.get("/audit/costs")
+    async def audit_costs(days: int = 30):
+        return await app.state.orch._audit.cost_summary(days=days)
+
+    @app.get("/audit/queries")
+    async def audit_queries(limit: int = 50):
+        records = await app.state.orch._audit.list_queries(limit=limit)
+        return {"records": records, "count": len(records)}
+
+    @app.get("/audit/events")
+    async def audit_events(limit: int = 100):
+        records = await app.state.orch._audit.list_events(limit=limit)
+        return {"records": records, "count": len(records)}
+
+    @app.post("/context/build")
+    async def context_build(req: ContextBuildRequest):
+        from synthadoc.agents.context_agent import ContextAgent
+        from synthadoc.providers import make_provider
+        orch = app.state.orch
+        budget = req.token_budget if req.token_budget is not None \
+            else orch._cfg.query.context_token_budget
+        agent = ContextAgent(
+            provider=make_provider("query", orch._cfg),
+            store=orch._store,
+            search=orch._search,
+            token_budget=budget,
+        )
+        pack = await agent.build(req.goal, token_budget=budget)
+        return pack.to_dict()
+
+    # ── Routing ───────────────────────────────────────────────────────────────
+    from synthadoc.core.routing import RoutingIndex as _RI
+
+    def _routing_paths() -> tuple[Path, Path]:
+        root = app.state.orch._root
+        return root, root / "ROUTING.md"
+
+    @app.get("/routing/status")
+    async def routing_status():
+        root, routing_path = _routing_paths()
+        ri = _RI.parse(routing_path)
+        exists = routing_path.exists()
+        content = routing_path.read_text(encoding="utf-8") if exists else ""
+        return {
+            "exists": exists,
+            "branches": len(ri.branches),
+            "slugs": sum(len(v) for v in ri.branches.values()),
+            "content": content,
+        }
+
+    @app.post("/routing/init")
+    async def routing_init():
+        root, routing_path = _routing_paths()
+        index_path = root / "wiki" / "index.md"
+        if routing_path.exists():
+            raise HTTPException(409, "ROUTING.md already exists. Delete it first to re-init.")
+        if not index_path.exists():
+            raise HTTPException(400, "index.md not found — run scaffold first.")
+        ri = _RI.from_index_md(index_path)
+        ri.save(routing_path)
+        content = routing_path.read_text(encoding="utf-8")
+        return {
+            "branches": len(ri.branches),
+            "slugs": sum(len(v) for v in ri.branches.values()),
+            "content": content,
+        }
+
+    @app.post("/routing/validate")
+    async def routing_validate():
+        root, routing_path = _routing_paths()
+        if not routing_path.exists():
+            raise HTTPException(404, "ROUTING.md not found — run Init first.")
+        ri = _RI.parse(routing_path)
+        existing = {p.stem for p in (root / "wiki").glob("*.md")}
+        dangling = ri.validate(existing)
+        return {
+            "clean": len(dangling) == 0,
+            "dangling": [{"branch": b, "slug": s} for b, s in dangling],
+        }
+
+    @app.post("/routing/clean")
+    async def routing_clean():
+        root, routing_path = _routing_paths()
+        if not routing_path.exists():
+            raise HTTPException(404, "ROUTING.md not found — run Init first.")
+        ri = _RI.parse(routing_path)
+        existing = {p.stem for p in (root / "wiki").glob("*.md")}
+        removed = ri.clean(existing)
+        ri.save(routing_path)
+        content = routing_path.read_text(encoding="utf-8")
+        return {
+            "removed": [{"branch": b, "slug": s} for b, s in removed],
+            "content": content,
+        }
+
+    # ── Staging policy ────────────────────────────────────────────────────────
+    def _staging_cfg_path() -> Path:
+        return app.state.orch._root / ".synthadoc" / "config.toml"
+
+    @app.get("/staging/policy")
+    async def staging_policy_get():
+        import tomllib as _tomllib
+        cfg_path = _staging_cfg_path()
+        raw = _tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+        ig = raw.get("ingest", {})
+        return {
+            "policy": ig.get("staging_policy", "off"),
+            "confidence_min": ig.get("staging_confidence_min", "high"),
+        }
+
+    @app.post("/staging/policy")
+    async def staging_policy_set(req: StagingPolicyRequest):
+        import tomllib as _tomllib
+        from synthadoc.cli.candidates import _patch_toml as _cand_patch_toml
+        if req.policy not in ("off", "all", "threshold"):
+            raise HTTPException(400, "policy must be off, all, or threshold")
+        if req.confidence_min and req.confidence_min not in ("high", "medium", "low"):
+            raise HTTPException(400, "confidence_min must be high, medium, or low")
+        cfg_path = _staging_cfg_path()
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        updates: dict = {"staging_policy": req.policy}
+        if req.confidence_min:
+            updates["staging_confidence_min"] = req.confidence_min
+        _cand_patch_toml(cfg_path, "ingest", updates)
+        raw = _tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        ig = raw.get("ingest", {})
+        return {
+            "policy": ig.get("staging_policy", "off"),
+            "confidence_min": ig.get("staging_confidence_min", "high"),
+        }
+
+    # ── Candidates ────────────────────────────────────────────────────────────
+    def _cand_dir() -> Path:
+        return app.state.orch._root / "wiki" / "candidates"
+
+    def _wiki_dir() -> Path:
+        return app.state.orch._root / "wiki"
+
+    @app.get("/candidates")
+    async def candidates_list():
+        from synthadoc.cli.candidates import _read_frontmatter as _cand_read_fm
+        cd = _cand_dir()
+        pages = sorted(cd.glob("*.md")) if cd.exists() else []
+        result = []
+        for p in pages:
+            fm = _cand_read_fm(p)
+            result.append({
+                "slug": p.stem,
+                "title": fm.get("title") or p.stem.replace("-", " ").title(),
+                "confidence": fm.get("confidence", ""),
+                "created": fm.get("created", ""),
+            })
+        return result
+
+    @app.post("/candidates/promote-all")
+    async def candidates_promote_all():
+        from synthadoc.cli.candidates import _read_frontmatter as _cand_read_fm
+        from synthadoc.cli.candidates import _add_to_index as _cand_add_to_index
+        from synthadoc.cli.candidates import _page_title as _cand_page_title
+        import shutil as _shutil
+        cd = _cand_dir()
+        wd = _wiki_dir()
+        pages = sorted(cd.glob("*.md")) if cd.exists() else []
+        promoted = []
+        new_pages = []  # only pages that didn't already exist in wiki/
+        for src in pages:
+            dest = wd / src.name
+            is_new = not dest.exists()
+            title = _cand_page_title(src)
+            _shutil.move(str(src), str(dest))
+            promoted.append((src.stem, title))
+            if is_new:
+                new_pages.append((src.stem, title))
+        if new_pages:
+            _cand_add_to_index(wd, new_pages)
+        return {"promoted": [s for s, _ in promoted], "count": len(promoted)}
+
+    @app.post("/candidates/discard-all")
+    async def candidates_discard_all():
+        cd = _cand_dir()
+        pages = sorted(cd.glob("*.md")) if cd.exists() else []
+        discarded = []
+        for src in pages:
+            src.unlink(missing_ok=True)
+            discarded.append(src.stem)
+        return {"discarded": discarded, "count": len(discarded)}
+
+    @app.post("/candidates/{slug}/promote")
+    async def candidates_promote_one(slug: str):
+        import shutil as _shutil
+        from synthadoc.cli.candidates import _add_to_index as _cand_add_to_index
+        from synthadoc.cli.candidates import _page_title as _cand_page_title
+        cd = _cand_dir()
+        wd = _wiki_dir()
+        src = cd / f"{slug}.md"
+        if not src.exists():
+            raise HTTPException(404, f"Candidate '{slug}' not found.")
+        dest = wd / src.name
+        is_new = not dest.exists()
+        title = _cand_page_title(src)
+        _shutil.move(str(src), str(dest))
+        if is_new:
+            _cand_add_to_index(wd, [(slug, title)])
+        return {"slug": slug, "promoted": True, "updated": not is_new}
+
+    @app.post("/candidates/{slug}/discard")
+    async def candidates_discard_one(slug: str):
+        cd = _cand_dir()
+        src = cd / f"{slug}.md"
+        if not src.exists():
+            raise HTTPException(404, f"Candidate '{slug}' not found.")
+        src.unlink()
+        return {"slug": slug, "discarded": True}
+
+    return app

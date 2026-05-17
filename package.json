@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "playwright": "^1.60.0",
-    "three-spritetext": "^1.10.0"
-  }
-}
