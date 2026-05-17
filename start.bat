@@ -31,6 +31,15 @@ if "%DEEPSEEK_API_KEY%"=="" (
 )
 
 echo.
+echo Please enter a name for your default wiki (e.g. my-wiki):
+set /p WIKI_NAME="Wiki Name: "
+if "%WIKI_NAME%"=="" set WIKI_NAME=default-wiki
+
+echo Installing wiki "%WIKI_NAME%"...
+synthadoc install %WIKI_NAME% --target "%USERPROFILE%\wikis" --domain "Default wiki for DeepSeek"
+synthadoc use %WIKI_NAME%
+
+echo.
 echo Starting Synthadoc...
 synthadoc serve
 pause
